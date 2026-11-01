@@ -1,0 +1,16 @@
+thaistt — ส่วนประกอบของบุคคลที่สาม
+
+thaistt เป็น orchestrator: งานถอดเสียงและแปลงเสียงทั้งหมดกระทำโดย external binary
+ซึ่งผู้ใช้ติดตั้งแยกต่างหาก (ไม่ได้ bundle มากับ repo นี้)
+
+1) whisper.cpp  https://github.com/ggml-org/whisper.cpp  (MIT License)
+   ตัวถอดเสียง (speech-to-text) — เรียกผ่าน subprocess
+
+2) โมเดล whisper รูปแบบ ggml (เช่น ggml-large-v3-turbo)
+   แปลงจากน้ำหนักโมเดล Whisper ของ OpenAI (MIT License)
+   https://github.com/openai/whisper · ไฟล์แปลง ggml จัดที่โดยโครงการ whisper.cpp
+
+3) FFmpeg  https://ffmpeg.org  (LGPL-2.1+ หรือ GPL-2.0+ แล้วแต่รุ่น build)
+   ตัวแปลงไฟล์สื่อ — เรียกผ่าน subprocess แบบ external binary
+
+ผู้ใช้ต้องปฏิบัติตามเงื่อนไขใบอนุญาตของ external binary และโมเดลที่ตนเลือกใช้เอง

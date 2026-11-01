@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+.DS_Store
+.venv/
+venv/
+
+# ห้าม commit โมเดล/ไบนารี/สื่อ (กฎ AGENT.md ข้อ 2)
+*.ggml
+*.bin
+*.onnx
+*.wav
+*.mp4
+*.mkv
+*.mp3
+*.ogg
+*.m4a
