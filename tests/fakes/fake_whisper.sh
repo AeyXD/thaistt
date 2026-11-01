@@ -1,10 +1,14 @@
 #!/bin/sh
 # whisper-cli ปลอมสำหรับเทส integration ของ thaistt (POSIX เท่านั้น)
 # - ตอบ --help แบบ build "-of + bool" (ไม่มี FNAME) และมี --prompt
-#   -> ทำให้ probe ของ thaistt เลือกสไตล์ bool (เหมือน whisper.cpp homebrew จริง)
+#   -> probe ของ thaistt เลือกสไตล์ bool (เหมือน whisper.cpp homebrew จริง)
 # - บันทึก argv บรรทัดละ 1 อาร์กิวเมนต์ ลง $THAISTT_TEST_ARGLOG_WH
-# - เขียนผลลัพธ์ SRT/txt ตามธง -osrt/-otxt (รับทั้งสไตล์ FNAME และ -of prefix)
-# - $THAISTT_TEST_WHISPER_FAIL=1 -> จำลอง whisper พังทุกครั้ง (exit 1)
+# - มี "explicit target" (-osrt/-otxt/-of ตามด้วยค่าไม่ขึ้นต้น '-') = โหมดไฟล์เดียว:
+#   เขียน canned SRT/txt ที่ target (รับทั้งสไตล์ FNAME และ -of prefix)
+# - ไม่มี explicit target = โหมด batch (multi -f + -otxt ล้วน):
+#   เขียน "<input>.txt" ข้างทุกไฟล์ (เลียนแบบ whisper.cpp build จริง)
+#   เนื้อหาจาก $THAISTT_TEST_WHISPER_TEXT (default "Hello there friend.")
+# - $THAISTT_TEST_WHISPER_FAIL=1 -> พังทุกครั้ง (exit 1)
 [ -n "$THAISTT_TEST_ARGLOG_WH" ] || exit 9
 printf '%s\n' "$@" >> "$THAISTT_TEST_ARGLOG_WH"
 if [ -n "$THAISTT_TEST_WHISPER_FAIL" ]; then
@@ -20,25 +24,41 @@ if [ "$1" = "--help" ]; then
   exit 0
 fi
 mode=""
-out=""
+target=""
 prev=""
+inputs=""
 for a in "$@"; do
   case "$a" in -osrt|-otxt) mode="$a" ;; esac
-  case "$prev" in -osrt|-otxt|-of) out="$a" ;; esac
+  case "$prev" in
+    -osrt|-otxt|-of)
+      case "$a" in -*) ;; *) target="$a" ;; esac
+      ;;
+  esac
+  case "$prev" in
+    -f)
+      case "$a" in -*) ;; *) inputs="$inputs
+$a" ;; esac
+      ;;
+  esac
   prev="$a"
 done
-if [ -z "$out" ]; then
-  echo "fake whisper: no output arg" >&2
-  exit 1
+text="${THAISTT_TEST_WHISPER_TEXT:-Hello there friend.}"
+if [ -z "$target" ]; then
+  # batch: ผลลัพธ์ข้างไฟล์ input ทุกตัว
+  echo "$inputs" | while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    printf '%s\n' "$text" > "$f.txt"
+  done
+  exit 0
 fi
-case "$out" in
+case "$target" in
   *.srt|*.txt) ;;
-  *) if [ "$mode" = "-otxt" ]; then out="$out.txt"; else out="$out.srt"; fi ;;
+  *) if [ "$mode" = "-otxt" ]; then target="$target.txt"; else target="$target.srt"; fi ;;
 esac
 if [ "$mode" = "-otxt" ]; then
-  printf 'Hello there friend.\n' > "$out"
+  printf '%s\n' "$text" > "$target"
 else
-  cat > "$out" <<'SRT'
+  cat > "$target" <<'SRT'
 1
 00:00:00,000 --> 00:00:01,500
 Hi.

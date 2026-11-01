@@ -6,8 +6,10 @@
 """
 import io
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import unittest
 from contextlib import redirect_stderr
 from pathlib import Path
@@ -19,7 +21,18 @@ import thaistt  # noqa: E402
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 # สภาพแวดล้อมสะอาด: ตัด env ของ thaistt ออกทั้งหมดกันค่าที่เครื่องเจ้าของตั้งค้างไว้
+# + แยะ home กันโมเดลจริงใน ~/.local/share/whisper-models หลุดเข้าเทส
+#   (v0.2 ค้นโฟลเดอร์นี้เป็นค่าปริยายเมื่อไม่ได้ระบุ --model/THAISTT_MODEL)
+ISOLATED_HOME = tempfile.mkdtemp(prefix="thaistt-clihome-")
+
+
+def tearDownModule():
+    shutil.rmtree(ISOLATED_HOME, ignore_errors=True)
+
+
 CLEAN_ENV = {k: v for k, v in os.environ.items() if not k.startswith("THAISTT_")}
+CLEAN_ENV["HOME"] = ISOLATED_HOME
+CLEAN_ENV["USERPROFILE"] = ISOLATED_HOME
 
 
 def run_main(argv, env_overrides=None):
@@ -150,6 +163,47 @@ class TestErrorPaths(unittest.TestCase):
             [self.media, "-l", "en", "-o", self.out, "--ffmpeg", not_exec])
         self.assertEqual(code, 2)
         self.assertIn("executable", err)
+
+    def test_model_default_dir_single_candidate(self):
+        """ไม่ระบุโมเดล + ~/.local/share/whisper-models มีไฟล์เดียว → ใช้ไฟล์นั้น"""
+        home = tempfile.mkdtemp(prefix="thaistt-modelhome-")
+        model_dir = os.path.join(home, ".local", "share", "whisper-models")
+        os.makedirs(model_dir)
+        model_file = os.path.join(model_dir, "ggml-base.en.bin")
+        with open(model_file, "wb") as fh:
+            fh.write(b"m")
+        try:
+            # ผ่านการหาโมเดลแล้ว → ไปพังที่ ffmpeg ปลอม (sys.executable) แทน
+            code, err = run_main(
+                [self.media, "-l", "en", "-o", self.out,
+                 "--ffmpeg", sys.executable, "--whisper", sys.executable],
+                env_overrides={"HOME": home, "USERPROFILE": home},
+            )
+            self.assertEqual(code, 2)
+            self.assertNotIn("โมเดล", err)
+            self.assertIn("ffmpeg แปลงเสียงไม่สำเร็จ", err)
+        finally:
+            shutil.rmtree(home, ignore_errors=True)
+
+    def test_model_default_dir_multiple_candidates(self):
+        """มีหลายไฟล์ → ไม่เดา แจ้งรายชื่อให้ระบุเอง"""
+        home = tempfile.mkdtemp(prefix="thaistt-modelhome-")
+        model_dir = os.path.join(home, ".local", "share", "whisper-models")
+        os.makedirs(model_dir)
+        for name in ("ggml-a.bin", "ggml-b.bin"):
+            with open(os.path.join(model_dir, name), "wb") as fh:
+                fh.write(b"m")
+        try:
+            code, err = run_main(
+                [self.media, "-l", "en", "-o", self.out,
+                 "--ffmpeg", sys.executable, "--whisper", sys.executable],
+                env_overrides={"HOME": home, "USERPROFILE": home},
+            )
+            self.assertEqual(code, 2)
+            self.assertIn("พบโมเดลหลายไฟล์", err)
+            self.assertIn("ggml-a.bin", err)
+        finally:
+            shutil.rmtree(home, ignore_errors=True)
 
     def test_bad_range_format(self):
         code, err = run_main(

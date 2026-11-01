@@ -23,7 +23,7 @@ python3 thaistt.py --help                       # CLI (เมื่อ implement
 
 | ที่อยู่ | หน้าที่ |
 |---|---|
-| `thaistt.py` | CLI เดียวจบ (v0.1): ffmpeg → whisper.cpp → ชั้นจัดจังหวะซับ → SRT |
+| `thaistt.py` | CLI เดียวจบ: ไฟล์เดียว (v0.1) ffmpeg → whisper.cpp → ชั้นจัดจังหวะซับ → SRT/txt · batch รายคลิป (v0.2) multi `-f` รอบเดียวต่อชุด → txt + สรุป |
 | `tests/` | unit (ชั้นจัดจังหวะใช้ SRT ดิบจำลองได้ ไม่ต้องมี whisper) + fixture สื่อจริง |
 | `NOTICE` | เครดิตส่วนประกอบบุคคลที่สาม — ต้องรักษาไว้ทุกครั้งที่แก้ |
 

@@ -26,6 +26,8 @@ import thaistt  # noqa: E402
 CLEAN_ENV = {k: v for k, v in os.environ.items() if not k.startswith("THAISTT_")}
 
 JFK_WAV = "/opt/homebrew/share/whisper.cpp/jfk.wav"
+# เสียงพากย์จริงของ Witcher 1 (ใช้จริงกับงาน W1 — มีเครื่องไหนถึงรันเครื่องนั้น)
+W1_VOICES = "/Users/prawith/My Workspace/Playgound/ThaiW1Setup/work/voices"
 
 
 def _detect_tools():
@@ -101,6 +103,72 @@ class TestWithRealBinaries(unittest.TestCase):
         self.assertEqual(segments[0].start, 0)
         for a, b in zip(segments, segments[1:]):
             self.assertLessEqual(a.end, b.start)
+
+
+class TestBatchReal(unittest.TestCase):
+    """batch จริง (v0.2): multi-input whisper รอบเดียว + resume + W1 .ogg จริง"""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="thaistt-batchreal-")
+        self.outdir = os.path.join(self.tmp, "out")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _sine(self):
+        wav = os.path.join(self.tmp, "sine.wav")
+        subprocess.run(
+            [FFMPEG, "-y", "-hide_banner", "-loglevel", "error",
+             "-f", "lavfi", "-i", "sine=frequency=440:duration=3",
+             "-ar", "16000", "-ac", "1", wav],
+            check=True,
+        )
+        return wav
+
+    def _run(self, media, extra=None):
+        argv = list(media) + ["-l", "en", "-o", self.outdir, "--format", "txt",
+                              "--ffmpeg", FFMPEG, "--whisper", WHISPER,
+                              "--model", MODEL] + (extra or [])
+        buf = io.StringIO()
+        env = dict(CLEAN_ENV)
+        with mock.patch.dict(os.environ, env, clear=True), redirect_stderr(buf):
+            code = thaistt.main(argv)
+        return code, buf.getvalue()
+
+    @unittest.skipUnless(os.path.isfile(JFK_WAV), "ไม่มี jfk.wav บนเครื่องนี้")
+    def test_batch_jfk_plus_sine_and_resume(self):
+        sine = self._sine()
+        code, err = self._run([JFK_WAV, sine])
+        self.assertEqual(code, 0, err)
+        self.assertIn("สรุป batch", err)
+        with open(os.path.join(self.outdir, "jfk.txt"), encoding="utf-8") as fh:
+            self.assertGreater(len(fh.read().strip()), 0, "jfk ต้องมีข้อความ")
+        self.assertTrue(os.path.isfile(os.path.join(self.outdir, "sine.txt")),
+                        "คลิปเงียบก็ต้องได้ไฟล์ (ว่าง)")
+        # resume: รอบสอง (media ชุดเดิม) ต้องข้ามทั้งคู่และไม่พัง
+        code2, err2 = self._run([JFK_WAV, sine])
+        self.assertEqual(code2, 0, err2)
+        self.assertIn("ข้าม 2", err2)
+
+    @unittest.skipUnless(os.path.isdir(W1_VOICES), "ไม่มีคลังเสียง W1 บนเครื่องนี้")
+    def test_batch_w1_real_ogg_clips(self):
+        clips = sorted(
+            os.path.join(W1_VOICES, f)
+            for f in os.listdir(W1_VOICES)
+            if f.endswith(".ogg")
+        )[:5]
+        self.assertGreaterEqual(len(clips), 5)
+        code, err = self._run(clips)
+        self.assertEqual(code, 0, err)
+        non_empty = 0
+        for clip in clips:
+            out = os.path.join(self.outdir,
+                               os.path.splitext(os.path.basename(clip))[0] + ".txt")
+            self.assertTrue(os.path.isfile(out), "หาย: %s" % out)
+            with open(out, encoding="utf-8") as fh:
+                if fh.read().strip():
+                    non_empty += 1
+        self.assertGreaterEqual(non_empty, 1, "คลิปพากย์จริงต้องมีข้อความบ้าง")
 
 
 if __name__ == "__main__":
