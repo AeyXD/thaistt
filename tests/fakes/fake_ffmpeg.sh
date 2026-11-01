@@ -20,11 +20,18 @@ fi
 last=""
 for a in "$@"; do last="$a"; done
 [ -n "$last" ] || exit 1
-# header: RIFF size = 36+data · fmt PCM/1ch/16000Hz/16bit
-if [ -n "$THAISTT_TEST_FFMPEG_SHORT" ]; then
-  printf 'RIFF\xa4\x3e\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00\x80\x3e\x00\x00\x80\x7d\x00\x00\x02\x00\x10\x00data\x80\x3e\x00\x00' > "$last"
-  dd if=/dev/zero bs=16000 count=1 >> "$last" 2>/dev/null
-else
-  printf 'RIFF\x24\x7d\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00\x80\x3e\x00\x00\x80\x7d\x00\x00\x02\x00\x10\x00data\x80\x7d\x00\x00' > "$last"
-  dd if=/dev/zero bs=32000 count=1 >> "$last" 2>/dev/null
-fi
+# เขียน WAV จริงด้วย wave module ของ python3 (พกพาข้าม sh ทุกตัว — อย่าใช้
+# printf \xHH เพราะ dash บน ubuntu ไม่รองรับ) · 16000Hz mono 16-bit ·
+# $THAISTT_TEST_FFMPEG_SHORT=1 → 0.5 วินาที (default 1.0)
+python3 - "$last" <<'PYEOF'
+import os
+import sys
+import wave
+
+with wave.open(sys.argv[1], "wb") as w:
+    w.setnchannels(1)
+    w.setsampwidth(2)
+    w.setframerate(16000)
+    seconds = 0.5 if os.environ.get("THAISTT_TEST_FFMPEG_SHORT") else 1.0
+    w.writeframes(b"\x00\x00" * int(16000 * seconds))
+PYEOF
