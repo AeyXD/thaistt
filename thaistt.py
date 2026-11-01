@@ -562,7 +562,22 @@ def build_parser():
     return parser
 
 
+def _force_utf8_streams():
+    """บังคับ stdout/stderr เป็น UTF-8 — กันพังกลางคำบน Windows console
+
+    ที่ codepage เดิม (เช่น cp1252) เขียนข้อความไทยไม่ได้ จะกลายเป็น
+    UnicodeEncodeError ตั้งแต่ --help — สำหรับ consumer ที่อ่านทาง pipe
+    (THub-Launcher) ก็ได้ UTF-8 สม่ำเสมอทุกแพลตฟอร์ม
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError, OSError):
+            pass  # stream ถูกแทนที่ด้วย object ที่ reconfigure ไม่ได้ (เช่น pytest)
+
+
 def main(argv=None):
+    _force_utf8_streams()
     parser = build_parser()
     args = parser.parse_args(argv)
     if args.quiet:

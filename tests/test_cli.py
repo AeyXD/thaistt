@@ -6,6 +6,7 @@
 """
 import io
 import os
+import subprocess
 import sys
 import unittest
 from contextlib import redirect_stderr
@@ -14,6 +15,8 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import thaistt  # noqa: E402
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 # สภาพแวดล้อมสะอาด: ตัด env ของ thaistt ออกทั้งหมดกันค่าที่เครื่องเจ้าของตั้งค้างไว้
 CLEAN_ENV = {k: v for k, v in os.environ.items() if not k.startswith("THAISTT_")}
@@ -51,6 +54,20 @@ class TestArgparseContract(unittest.TestCase):
             with self.assertRaises(SystemExit) as ctx:
                 thaistt.main(["-o", "x.srt"])
         self.assertEqual(ctx.exception.code, 2)
+
+    def test_help_survives_legacy_console_encoding(self):
+        """--help ไทยต้องไม่ crash แม้ console เป็น encoding เดิม (cp1252)
+
+        regression: GitHub Actions Windows รัน python ด้วย cp1252 — ก่อนมี
+        _force_utf8_streams() ตัว --help พังด้วย UnicodeEncodeError
+        """
+        env = dict(CLEAN_ENV)
+        env["PYTHONIOENCODING"] = "cp1252"
+        proc = subprocess.run(
+            [sys.executable, str(REPO_ROOT / "thaistt.py"), "--help"],
+            env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        self.assertEqual(proc.returncode, 0)
 
     def test_bad_format_choice_is_exit_2(self):
         buf = io.StringIO()
