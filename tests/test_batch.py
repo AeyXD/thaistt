@@ -154,6 +154,12 @@ class TestBatchHelpers(unittest.TestCase):
             fh.write('{"transcription":[]}')
         self.assertIsNone(thaistt._confidence_from_json(silent))
 
+    def test_detect_regex(self):
+        line = "whisper_full_with_state: auto-detected language: de (p = 0.999347)"
+        m = thaistt._DETECT_RE.search(line)
+        self.assertEqual((m.group(1), float(m.group(2))), ("de", 0.999347))
+        self.assertIsNone(thaistt._DETECT_RE.search("no language here"))
+
 
 class TestBatchCliContract(unittest.TestCase):
     """ทาง error ของ batch — พังก่อนรัน external binary ใด ๆ (ทุกแพลตฟอร์ม)"""
@@ -251,6 +257,16 @@ class TestBatchCliContract(unittest.TestCase):
             code = thaistt.main(argv)
         self.assertEqual(code, 2)
         self.assertIn("--force ใช้กับโหมด batch", buf.getvalue())
+
+    def test_detect_lang_rejected_in_single_mode(self):
+        env = dict(CLEAN_ENV)
+        argv = [self.m1, "-l", "en", "-o", os.path.join(self.tmp, "o.srt"),
+                "--detect-lang"]
+        buf = io.StringIO()
+        with mock.patch.dict(os.environ, env, clear=True), redirect_stderr(buf):
+            code = thaistt.main(argv)
+        self.assertEqual(code, 2)
+        self.assertIn("--detect-lang ใช้กับโหมด batch", buf.getvalue())
 
     def test_files_from_missing_file(self):
         code, err = self.run_main(
@@ -500,6 +516,38 @@ class TestBatchWithFakes(unittest.TestCase):
         self.assertIn("สำเร็จ 2", err)  # media 1 + files-from 1
         rows = {r["id"]: r for r in self.read_manifest()}
         self.assertEqual(set(rows), {"m1", "m2"})
+
+    # ---------------- v0.4: --detect-lang (ข้อ 9 ของ W1/W2) ----------------
+
+    def test_detect_lang_match_and_mismatch(self):
+        # fake ตอบภาษา en ปกติ → ตรงกับ -l en = mismatch 0
+        code, err = self.run_batch(self.media[:2], ["--detect-lang"])
+        self.assertEqual(code, 0, err)
+        rows = {r["id"]: r for r in self.read_manifest()}
+        for r in rows.values():
+            self.assertEqual(r["lang"], "en")
+            self.assertEqual(r["lang_p"], "0.99")
+            self.assertEqual(r["lang_mismatch"], "0")
+        # สั่งให้ fake ตอบ "de" → คลิปไม่ใช่ภาษาที่สั่ง = mismatch 1
+        code, err = self.run_batch(
+            self.media[:2], ["--detect-lang", "--force"],
+            env_extra={"THAISTT_TEST_WHISPER_LANG": "de"})
+        self.assertEqual(code, 0, err)
+        rows = {r["id"]: r for r in self.read_manifest()}
+        for r in rows.values():
+            self.assertEqual(r["lang"], "de")
+            self.assertEqual(r["lang_mismatch"], "1")
+
+    def test_detect_lang_unsupported_build_degrades(self):
+        # build ไม่มี -dl → เตือน + คอลัมน์ว่าง แต่งานไม่พัง
+        code, err = self.run_batch(
+            [self.solo_folder()], ["--detect-lang"],
+            env_extra={"THAISTT_TEST_WHISPER_NODL": "1"})
+        self.assertEqual(code, 0, err)
+        self.assertIn("ไม่มี -dl", err)
+        row = self.read_manifest()[0]
+        self.assertEqual(row["lang"], "")
+        self.assertEqual(row["lang_mismatch"], "")
 
 
 if __name__ == "__main__":

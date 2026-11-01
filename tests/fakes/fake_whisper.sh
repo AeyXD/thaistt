@@ -22,6 +22,9 @@ if [ "$1" = "--help" ]; then
   printf '  -of FNAME, --output-file FNAME    [       ] output file path (without file extension)\n'
   printf '             --prompt PROMPT        [       ] initial prompt\n'
   printf '  -ojf,      --output-json-full     [false  ] include more information in the JSON file\n'
+  if [ -z "$THAISTT_TEST_WHISPER_NODL" ]; then
+    printf '  -dl,       --detect-language      [false  ] exit after automatically detecting language\n'
+  fi
   exit 0
 fi
 mode=""
@@ -45,9 +48,22 @@ $a" ;; esac
 done
 text="${THAISTT_TEST_WHISPER_TEXT:-Hello there friend.}"
 want_json=0
+want_dl=0
 for a in "$@"; do
   [ "$a" = "-ojf" ] && want_json=1
+  [ "$a" = "-dl" ] && want_dl=1
 done
+if [ "$want_dl" = "1" ]; then
+  # เลียน -dl ของ build จริง: จบหลังตรวจภาษา (ไม่เขียนไฟล์ผล) — ต่อไฟล์:
+  # main: processing '<f>' … + whisper_full_with_state: auto-detected language: X (p = 0.99)
+  lang="${THAISTT_TEST_WHISPER_LANG:-en}"
+  echo "$inputs" | while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    printf "main: processing '%s' (16000 samples, 1.0 sec), 4 threads, lang = auto ...\n" "$f" >&2
+    printf "whisper_full_with_state: auto-detected language: %s (p = 0.990000)\n" "$lang" >&2
+  done
+  exit 0
+fi
 emit_json() {
   # เลียน -ojf ของ build จริง: token ละ p — ข้อความ 4 token (0.2/0.9/0.95/0.61)
   # → avg_p 0.665 · low_conf_pct 25 · [_BEG_] เป็น token พิเศษไม่นับ

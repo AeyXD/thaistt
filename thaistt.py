@@ -46,7 +46,7 @@ import threading
 import wave
 
 APP = "thaistt"
-VERSION = "0.3.0"
+VERSION = "0.4.0"
 
 ENV_WHISPER = "THAISTT_WHISPER"
 ENV_MODEL = "THAISTT_MODEL"
@@ -358,6 +358,12 @@ _PROG_RE = re.compile(r"progress\s*=\s*(\d+)\s*%")
 # token พิเศษของ whisper ([_BEG_] [_EOT_] [_TT_48] …) — ไม่นับเข้าความมั่นใจข้อความ
 _SPECIAL_TOKEN_RE = re.compile(r"^\[_.+\]$")
 
+# "main: processing '<path>' (N samples, X sec), ..." — ตัวคั่นอ้างอิง per-file ของ whisper
+# (ใช้กับรอบตรวจภาษา -dl ที่ผลออกทาง stderr)
+_PROCESSING_RE = re.compile(r"^\s*main: processing '([^']+)'")
+# "whisper_full_with_state: auto-detected language: de (p = 0.999347)"
+_DETECT_RE = re.compile(r"auto-detected language:\s*(\S+)\s*\(p\s*=\s*([0-9.]+)\)")
+
 # ค่าความมั่นใจต่ำกว่านี้ถือว่า "มั่นใจต่ำ" (manifest: low_conf_pct)
 LOW_CONF_THRESHOLD = 0.5
 
@@ -387,9 +393,9 @@ def _confidence_from_json(json_path):
 
 
 def _probe_whisper(whisper_bin):
-    """อ่าน --help เพื่อจับสไตล์ธง output · มี --prompt / -ojf (json เต็ม) ไหม
+    """อ่าน --help เพื่อจับสไตล์ธง output · มี --prompt / -ojf / -dl (ตรวจภาษา) ไหม
 
-    คืน (fname_style, has_prompt, has_json) หรือ None เมื่อสอบถามไม่ได้ (fallback เอง)
+    คืน (fname_style, has_prompt, has_json, has_detect) หรือ None เมื่อสอบถามไม่ได้
     """
     try:
         proc = subprocess.run(
@@ -410,7 +416,8 @@ def _probe_whisper(whisper_bin):
     fname_style = "FNAME" in line
     has_prompt = "--prompt" in text
     has_json = "--output-json-full" in text
-    return fname_style, has_prompt, has_json
+    has_detect = "--detect-language" in text
+    return fname_style, has_prompt, has_json, has_detect
 
 
 def _whisper_argv(whisper_bin, model, wav, lang, out_path, fmt, threads, prompt,
@@ -479,7 +486,7 @@ def _run_whisper(whisper_bin, model, wav, lang, out_path, fmt, threads, prompt,
         fname_style, has_prompt, has_json = True, True, False
         style_order = [True, False]
     else:
-        fname_style, has_prompt, has_json = probe
+        fname_style, has_prompt, has_json = probe[:3]
         style_order = [fname_style, not fname_style]
     if prompt and not has_prompt:
         say("คำเตือน: build ของ whisper.cpp นี้ไม่มีตัวเลือก --prompt — ข้ามคำใบ้ที่ให้มา")
@@ -524,7 +531,7 @@ def _run_whisper_multi(whisper_bin, model, wav_paths, lang, threads, prompt, wor
     if probe is None:
         fname_style, has_prompt, has_json = False, True, False
     else:
-        fname_style, has_prompt, has_json = probe
+        fname_style, has_prompt, has_json = probe[:3]
     if fname_style:
         return False, {w: os.path.isfile(w + ".txt") for w in wav_paths}
     cmd = [whisper_bin, "-m", model]
@@ -544,6 +551,42 @@ def _run_whisper_multi(whisper_bin, model, wav_paths, lang, threads, prompt, wor
         raise ThaisttError("เรียก whisper.cpp ไม่ได้: %s" % exc)
     done = {wav: os.path.isfile(wav + ".txt") for wav in wav_paths}
     return (rc == 0 and all(done.values())), done
+
+
+def _run_whisper_detect(whisper_bin, model, wav_paths, workdir):
+    """รอบตรวจภาษาแยก (ข้อ 9 ของ W1/W2): multi -f + `-l auto -dl`
+
+    whisper จบหลัง langid (ไม่ decode — เร็วกว่าถอดเสียงเยอะ) แล้วพิมพ์ต่อไฟล์:
+    `main: processing '<wav>' …` + `auto-detected language: de (p = 0.999347)`
+    คืน {wav: (lang, p)} — ไฟล์ที่ไม่มีบรรทัดผล = ไม่อยู่ใน dict ·
+    build ไม่มี -dl / รันพัง → คืน {} ให้ผู้เรียกเตือนและเดินต่อ (ไม่ถือว่างานพัง)
+    """
+    probe = _probe_whisper(whisper_bin)
+    has_detect = bool(probe) and probe[3]
+    if not has_detect:
+        return None  # build ไม่รองรับ (ต่างจาก {} = รองรับแต่ไม่มีผล)
+    cmd = [whisper_bin, "-m", model]
+    for wav in wav_paths:
+        cmd += ["-f", wav]
+    cmd += ["-l", "auto", "-dl"]
+    result = {}
+    state = {"current": None}
+    wav_set = set(wav_paths)
+
+    def on_line(line):
+        m = _PROCESSING_RE.match(line)
+        if m:
+            state["current"] = m.group(1)
+            return
+        m = _DETECT_RE.search(line)
+        if m and state["current"] in wav_set:
+            result[state["current"]] = (m.group(1), float(m.group(2)))
+
+    try:
+        _rc, _tail = _spawn_streaming_stderr(cmd, workdir, on_line)
+    except OSError:
+        return {}
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -622,6 +665,8 @@ def run_pipeline(args, say):
     # โหมดไฟล์เดียว: media มีสมาชิกเดียวและไม่ใช่โฟลเดอร์ (dispatch ที่ main)
     if args.force:
         raise ThaisttError("--force ใช้กับโหมด batch เท่านั้น (โหมดไฟล์เดียวเขียนทับ output อยู่แล้ว)")
+    if args.detect_lang:
+        raise ThaisttError("--detect-lang ใช้กับโหมด batch เท่านั้น (ผลอยู่ใน manifest ของ batch)")
     media = os.path.abspath(os.path.expanduser(args.media[0]))
     if not os.path.isfile(media):
         raise ThaisttError("ไม่พบไฟล์สื่อ: %s" % media)
@@ -761,6 +806,10 @@ def build_parser():
         "--force", dest="force", action="store_true",
         help="batch: ถอดใหม่แม้มีผลลัพธ์อยู่แล้ว (ปกติข้ามเพื่อ resume — เช่นหลังเพิ่มชื่อใน --prompt-file)")
     parser.add_argument(
+        "--detect-lang", dest="detect_lang", action="store_true",
+        help="batch: ตรวจภาษาที่ได้ยินต่อคลิปอีกรอบ (รอบเดียวต่อกลุ่ม เร็ว) — ใส่ manifest "
+             "เป็น lang/lang_p/lang_mismatch เพื่อจับคลิปที่ไม่ใช่ภาษาที่สั่ง (ภาษาเอลฟ์/เสียงร้อง/คาถา)")
+    parser.add_argument(
         "--quiet", dest="quiet", action="store_true",
         help="เงียบ — ไม่พิมพ์ progress %% ที่ stderr (ข้อผิดพลาดยังแสดง)")
     return parser
@@ -837,6 +886,8 @@ class _BatchItem:
     text: str = ""
     avg_p: object = None        # ความมั่นใจเฉลี่ยต่อ token 0..1 (จาก -ojf ของ whisper)
     low_conf_pct: object = None  # % ของ token ที่มั่นใจต่ำ (p < 0.5)
+    lang: str = ""              # ภาษาที่ตรวจพบ (รอบ --detect-lang — ว่างเมื่อไม่ได้ตรวจ)
+    lang_p: object = None       # ความน่าจะเป็นของภาษาที่ตรวจพบ 0..1
 
 
 def _batch_summary(items):
@@ -871,20 +922,26 @@ def _batch_summary(items):
     return len(groups["fail"])
 
 
-def _write_manifest(items, out_dir):
+def _write_manifest(items, out_dir, requested_lang=""):
     """สรุปผลรายคลิปแบบเครื่องอ่านได้ (CSV) — ฝั่งเกมไม่ต้องเดาความยาวจากขนาดไฟล์
 
     คอลัมน์: id · file (abs) · status (ok/empty/fail/skip) · duration_s ·
     avg_p (ความมั่นใจเฉลี่ยต่อ token 0..1 จาก -ojf — ว่างเมื่อ build ไม่รองรับ) ·
-    low_conf_pct (%token ที่มั่นใจต่ำ p<0.5) · suspicious (0/1) · text_chars · note
+    low_conf_pct (%token ที่มั่นใจต่ำ p<0.5) · lang/lang_p/lang_mismatch (รอบ
+    --detect-lang: ภาษาที่ตรวจพบ + ความน่าจะเป็น + 1 เมื่อคลิปน่าจะไม่ใช่ภาษาที่สั่ง —
+    จับภาษาเอลฟ์/เสียงร้อง/คาถา ตามข้อ 9 ของ W1/W2) · suspicious · text_chars · note
     """
     path = os.path.join(out_dir, MANIFEST_NAME)
     try:
         with open(path, "w", encoding="utf-8-sig", newline="") as fh:
             writer = csv.writer(fh)
             writer.writerow(["id", "file", "status", "duration_s", "avg_p",
-                             "low_conf_pct", "suspicious", "text_chars", "note"])
+                             "low_conf_pct", "lang", "lang_p", "lang_mismatch",
+                             "suspicious", "text_chars", "note"])
             for it in items:
+                mismatch = ""
+                if it.lang and requested_lang and requested_lang != "auto":
+                    mismatch = 0 if it.lang == requested_lang else 1
                 writer.writerow([
                     it.stem,
                     it.src,
@@ -892,6 +949,9 @@ def _write_manifest(items, out_dir):
                     "" if it.duration is None else "%.2f" % it.duration,
                     "" if it.avg_p is None else it.avg_p,
                     "" if it.low_conf_pct is None else it.low_conf_pct,
+                    it.lang,
+                    "" if it.lang_p is None else it.lang_p,
+                    mismatch,
                     1 if _is_suspicious(it.duration, it.text) else 0,
                     len(it.text),
                     it.note,
@@ -1032,16 +1092,32 @@ def run_batch(args, say):
                             it.avg_p, it.low_conf_pct = conf
                     else:
                         it.status, it.note = "fail", "whisper ไม่ได้ผลลัพธ์"
+            # รอบตรวจภาษา (ข้อ 9 ของ W1/W2): แยกจากรอบถอด — จับคลิปภาษาเอลฟ์/
+            # เสียงร้อง/คาถา ที่ไม่ใช่ภาษาที่สั่ง ใส่ manifest เป็น lang/lang_p
+            if args.detect_lang:
+                detectable = [it.wav for it in group if it.status in ("ok", "empty")]
+                if detectable:
+                    detected = _run_whisper_detect(
+                        whisper_bin, model, detectable, wavs_dir)
+                    if detected is None and not state.get("warned_no_detect"):
+                        state["warned_no_detect"] = True
+                        say("คำเตือน: build ของ whisper.cpp นี้ไม่มี -dl "
+                            "(--detect-language) — ข้ามการตรวจภาษา")
+                    for it in group:
+                        if it.wav in (detected or {}):
+                            it.lang, it.lang_p = detected[it.wav]
             state["processed"] += len(group)
             say_pct(60 + 35 * state["processed"] // max(1, total),
-                    "ถอดเสียงกลุ่ม %d/%d เสร็จ…" % (seq, len(groups)))
+                    "ถอดเสียงกลุ่ม %d/%d เสร็จ%s…"
+                    % (seq, len(groups),
+                       " (พร้อมตรวจภาษา)" if args.detect_lang else ""))
 
     # เขียนผลลัพธ์นอก temp — ok/empty เขียนไฟล์เสมอ (ว่าง = ไฟล์เปล่า) ให้ resume สม่ำเสมอ
     for it in items:
         if it.status in ("ok", "empty"):
             _write_text(it.out_path, it.text + "\n" if it.text else "")
 
-    _write_manifest(items, out_dir)
+    _write_manifest(items, out_dir, requested_lang=args.lang)
     say("progress: 100%% เสร็จ — ผลอยู่ที่ %s (สรุปรายคลิป: %s)" % (out_dir, MANIFEST_NAME))
     fail_count = _batch_summary(items)
     return 2 if fail_count else 0

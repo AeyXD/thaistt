@@ -184,5 +184,32 @@ class TestBatchReal(unittest.TestCase):
         self.assertGreaterEqual(non_empty, 1, "คลิปพากย์จริงต้องมีข้อความบ้าง")
 
 
+    @unittest.skipUnless(shutil.which("say") and os.path.isfile(JFK_WAV),
+                         "ต้องมี say (macOS) + jfk.wav — ทดสอบจับคลิป non-English จริง")
+    def test_detect_lang_flags_german_clip(self):
+        """ข้อ 9 กับของจริง: คลิปเยอรมัน (TTS) ปนอังกฤษ สั่ง -l en → manifest
+        ต้องตรวจพบ de และติด mismatch ให้คลิปเยอรมันเท่านั้น"""
+        aiff = os.path.join(self.tmp, "de.aiff")
+        subprocess.run(
+            ["say", "-v", "Anna", "-o", aiff,
+             "Guten Tag, ich heisse Anna und wohne in Berlin."],
+            check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        de_wav = os.path.join(self.tmp, "de_clip.wav")
+        subprocess.run(
+            [FFMPEG, "-y", "-hide_banner", "-loglevel", "error", "-i", aiff,
+             "-ar", "16000", "-ac", "1", de_wav], check=True)
+        code, err = self._run([de_wav, JFK_WAV], extra=["--detect-lang"])
+        self.assertEqual(code, 0, err)
+        import csv as _csv
+        with open(os.path.join(self.outdir, thaistt.MANIFEST_NAME),
+                  encoding="utf-8-sig", newline="") as fh:
+            rows = {r["id"]: r for r in _csv.DictReader(fh)}
+        self.assertEqual(rows["de_clip"]["lang"], "de")
+        self.assertEqual(rows["de_clip"]["lang_mismatch"], "1")
+        self.assertGreater(float(rows["de_clip"]["lang_p"]), 0.5)
+        self.assertEqual(rows["jfk"]["lang"], "en")
+        self.assertEqual(rows["jfk"]["lang_mismatch"], "0")
+
+
 if __name__ == "__main__":
     unittest.main()

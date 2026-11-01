@@ -12,11 +12,10 @@
 
 ## สถานะ
 
-✅ **v0.3 พร้อมใช้** — v0.1 (Phase S0 ตามสเปก `../THub Studio/docs/spec-vox-whisper.md`)
-+ **โหมด batch รายคลิป** v0.2 (ทดแทนสคริปต์ชั่วคราว xargs+run.sh ของ ThaiW1Setup)
-+ v0.3 ตามขอใช้จริงของ W2: **manifest CSV ต่อคลิป + ความมั่นใจ (avg_p) + .mp2 +
---files-from / --force / เตือนความยาว prompt**
-· Python **stdlib-only** · รองรับ whisper.cpp หลาย build (ธง output สองสไตล์ probe อัตโนมัติ)
+✅ **v0.4 พร้อมใช้** — v0.1 (Phase S0) + **batch รายคลิป** v0.2 + v0.3 (manifest ·
+ความมั่นใจ avg_p · .mp2 · --files-from/--force · เตือน prompt ยาว ตามขอใช้จริง W2)
++ **v0.4 `--detect-lang`** ตรวจภาษาต่อคลิป (ข้อ 9 ของ W1/W2 — จับภาษาเอลฟ์/เสียงร้อง)
+· Python **stdlib-only** · รองรับ whisper.cpp หลาย build (probe อัตโนมัติ)
 
 ## การใช้งาน — ไฟล์เดียว → ซับร่าง SRT
 
@@ -63,9 +62,13 @@ python3 thaistt.py <folder|ไฟล์หลายตัว> -l <lang> --format
   ตามเสียง w2speech ของ W2) · ชื่อคลิป (ไม่รวมนามสกุล) ชนกัน → ไฟล์แรกใช้ ที่เหลือข้ามพร้อมรายงาน
 - **manifest ต่อรอบ: `<outdir>/.thaistt-manifest.csv`** (utf-8-sig เปิดใน Excel ได้) —
   `id · file · status(ok/empty/fail/skip) · duration_s · avg_p · low_conf_pct ·
-  suspicious · text_chars · note` — ฝั่งเกมไม่ต้องเดาความยาวจากขนาดไฟล์ และเรียง
-  `avg_p` น้อย→มากได้ลำดับ "ตรวจก่อน" ทันที (ค่าความมั่นใจมาจาก `-ojf` ของ
-  whisper.cpp — token ละ p · build ไม่รองรับ = คอลัมน์ว่าง)
+  lang · lang_p · lang_mismatch · suspicious · text_chars · note` — ฝั่งเกมไม่ต้อง
+  เดาความยาวจากขนาดไฟล์ และเรียง `avg_p` น้อย→มากได้ลำดับ "ตรวจก่อน" ทันที
+  (ค่าความมั่นใจมาจาก `-ojf` ของ whisper.cpp — token ละ p · build ไม่รองรับ = คอลัมน์ว่าง)
+- **`--detect-lang`**: ตรวจภาษาที่ได้ยินต่อคลิปอีกรอบ (รอบเดียวต่อกลุ่ม จบหลัง
+  langid ไม่ decode — เร็ว) → คอลัมน์ `lang`/`lang_p`/`lang_mismatch` ใน manifest —
+  จับคลิปที่น่าจะ**ไม่ใช่ภาษาที่สั่ง** (ภาษาเอลฟ์/เสียงร้อง/คาถา ตามข้อ 9 ของ W1/W2 —
+  พิสูจน์ด้วยคลิปเยอรมันจริง: สั่ง `-l en` แล้วตรวจพบ `de (p=0.99)` ติด mismatch)
 - `--files-from list.txt` (หรือ `-` = stdin · บรรทัดละ path · `#` คอมเมนต์) — เลือก id
   เฉพาะที่ต้องการโดยไม่ต้องแยกโฟลเดอร์ต่อองก์ · `--force` ถอดซ้ำแม้มีผลแล้ว
   (เช่นหลังเพิ่มชื่อใน --prompt-file แล้วอยากถอดบรรทัดที่ชื่อเพี้ยนใหม่)
