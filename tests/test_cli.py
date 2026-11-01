@@ -61,6 +61,15 @@ class TestArgparseContract(unittest.TestCase):
         self.assertEqual(ctx.exception.code, 2)
         self.assertIn("อาร์กิวเมนต์ไม่ถูกต้อง", buf.getvalue())
 
+    def test_no_media_and_no_files_from_is_exit_2(self):
+        """ข้อสังเกต W2: --files-from ใช้เดี่ยวได้ → ไม่ใส่ media เลยต้องมี files-from"""
+        buf = io.StringIO()
+        with redirect_stderr(buf):
+            with self.assertRaises(SystemExit) as ctx:
+                thaistt.main(["-l", "en", "-o", "x.srt"])
+        self.assertEqual(ctx.exception.code, 2)
+        self.assertIn("--files-from", buf.getvalue())
+
     def test_missing_media_is_exit_2(self):
         buf = io.StringIO()
         with redirect_stderr(buf):

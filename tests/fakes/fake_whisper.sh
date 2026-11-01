@@ -65,10 +65,10 @@ if [ "$want_dl" = "1" ]; then
   exit 0
 fi
 emit_json() {
-  # เลียน -ojf ของ build จริง: token ละ p — ข้อความ 4 token (0.2/0.9/0.95/0.61)
-  # → avg_p 0.665 · low_conf_pct 25 · [_BEG_] เป็น token พิเศษไม่นับ
+  # เลียน -ojf ของ build จริง: token ละ p — ข้อความ 4 token (0.4/0.95/0.95/0.7)
+  # → avg_p 0.75 (ไม่ติดป้ายน่าสงสัย เกณฑ์ 0.70) · low_conf_pct 25 · [_BEG_] พิเศษไม่นับ
   [ "$want_json" = "1" ] || return 0
-  printf '%s' '{"transcription":[{"text":"x","tokens":[{"text":"[_BEG_]","p":0.2},{"text":" Hey","p":0.2},{"text":" there","p":0.9},{"text":" friend.","p":0.95},{"text":" now","p":0.61}]}]}' > "$1"
+  printf '%s' '{"transcription":[{"text":"x","tokens":[{"text":"[_BEG_]","p":0.2},{"text":" Hey","p":0.4},{"text":" there","p":0.95},{"text":" friend.","p":0.95},{"text":" now","p":0.7}]}]}' > "$1"
 }
 if [ -z "$target" ]; then
   # batch: ผลลัพธ์ข้างไฟล์ input ทุกตัว

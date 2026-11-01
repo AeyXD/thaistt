@@ -95,6 +95,11 @@ class TestBatchHelpers(unittest.TestCase):
         self.assertTrue(thaistt._is_suspicious(None, "Thank you."))    # วลีหลอน
         self.assertFalse(thaistt._is_suspicious(None, "hello"))
         self.assertFalse(thaistt._is_suspicious(1.2, "hello there"))
+        # v0.6: avg_p ต่ำ (คำตะโกนภาษาเอลฟ์ที่ langid จับไม่ได้) + lang_mismatch
+        self.assertTrue(thaistt._is_suspicious(1.5, "Aelirenn!", avg_p=0.55))
+        self.assertFalse(thaistt._is_suspicious(1.5, "Aelirenn!", avg_p=0.9))
+        self.assertTrue(thaistt._is_suspicious(5.0, "hello there", avg_p=0.95,
+                                              lang_mismatch=True))
 
     def test_mp2_is_media(self):
         # W2: เสียง w2speech เป็น mp2 (เคยต้องเปลี่ยนชื่อเป็น .mp3 เอง)
@@ -485,8 +490,8 @@ class TestBatchWithFakes(unittest.TestCase):
         for r in rows.values():
             self.assertEqual(r["status"], "ok")
             self.assertAlmostEqual(float(r["duration_s"]), 1.0, delta=0.05)
-            # fake ส่ง token ข้อความ 4 ตัว (p = 0.2/0.9/0.95/0.61) → avg 0.665 · ต่ำ 25%
-            self.assertEqual(r["avg_p"], "0.665")
+            # fake ส่ง token ข้อความ 4 ตัว (p = 0.4/0.95/0.95/0.7) → avg 0.75 · ต่ำ 25%
+            self.assertEqual(r["avg_p"], "0.75")
             self.assertEqual(r["low_conf_pct"], "25")
             self.assertEqual(r["suspicious"], "0")
             self.assertEqual(r["text_chars"], "19")  # "Hello there friend."
@@ -532,10 +537,25 @@ class TestBatchWithFakes(unittest.TestCase):
         rows = {r["id"]: r for r in self.read_manifest()}
         self.assertEqual(set(rows), {"m1", "m2"})
 
+    def test_files_from_alone_without_media(self):
+        """ข้อสังเกต W2: --files-from ต้องใช้เดี่ยวได้ ไม่ต้องใส่ media ปน"""
+        listfile = os.path.join(self.tmp, "pick.txt")
+        with open(listfile, "w", encoding="utf-8") as fh:
+            fh.write("%s\n%s\n" % (self.media[0], self.media[1]))
+        argv = ["-l", "en", "-o", self.outdir, "--format", "txt",
+                "--ffmpeg", str(FAKE_FFMPEG), "--whisper", str(FAKE_WHISPER),
+                "--model", self.model, "--files-from", listfile]
+        buf = io.StringIO()
+        with mock.patch.dict(os.environ, self.env, clear=True), redirect_stderr(buf):
+            code = thaistt.main(argv)
+        self.assertEqual(code, 0, buf.getvalue())
+        self.assertIn("สำเร็จ 2", buf.getvalue())
+        self.assertTrue(os.path.isfile(self.out("m1")))
+
     # ---------------- v0.4: --detect-lang (ข้อ 9 ของ W1/W2) ----------------
 
     def test_detect_lang_match_and_mismatch(self):
-        # fake ตอบภาษา en ปกติ → ตรงกับ -l en = mismatch 0
+        # fake ตอบภาษา en ปกติ → ตรงกับ -l en = mismatch 0 · ไม่ติดป้ายน่าสงสัย
         code, err = self.run_batch(self.media[:2], ["--detect-lang"])
         self.assertEqual(code, 0, err)
         rows = {r["id"]: r for r in self.read_manifest()}
@@ -543,7 +563,8 @@ class TestBatchWithFakes(unittest.TestCase):
             self.assertEqual(r["lang"], "en")
             self.assertEqual(r["lang_p"], "0.99")
             self.assertEqual(r["lang_mismatch"], "0")
-        # สั่งให้ fake ตอบ "de" → คลิปไม่ใช่ภาษาที่สั่ง = mismatch 1
+            self.assertEqual(r["suspicious"], "0")
+        # สั่งให้ fake ตอบ "de" → mismatch 1 และติดป้ายน่าสงสัยด้วย (v0.6)
         code, err = self.run_batch(
             self.media[:2], ["--detect-lang", "--force"],
             env_extra={"THAISTT_TEST_WHISPER_LANG": "de"})
@@ -552,6 +573,7 @@ class TestBatchWithFakes(unittest.TestCase):
         for r in rows.values():
             self.assertEqual(r["lang"], "de")
             self.assertEqual(r["lang_mismatch"], "1")
+            self.assertEqual(r["suspicious"], "1")
 
     def test_detect_lang_unsupported_build_degrades(self):
         # build ไม่มี -dl → เตือน + คอลัมน์ว่าง แต่งานไม่พัง

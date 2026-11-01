@@ -46,7 +46,7 @@ import threading
 import wave
 
 APP = "thaistt"
-VERSION = "0.5.0"
+VERSION = "0.6.0"
 
 ENV_WHISPER = "THAISTT_WHISPER"
 ENV_MODEL = "THAISTT_MODEL"
@@ -752,9 +752,9 @@ def build_parser():
                "--prompt \"Aloy, Erend\" · เวลาใน SRT อ้างตามไทม์ไลน์ไฟล์ต้นฉบับเสมอ",
     )
     parser.add_argument(
-        "media", nargs="+", metavar="media|folder",
-        help="ไฟล์สื่อที่ ffmpeg รองรับ (mp4/mkv/wav/ogg/mp3/m4a/webm ฯลฯ) — "
-             "หลายตัวหรือโฟลเดอร์ = โหมด batch (txt รายคลิป)")
+        "media", nargs="*", metavar="media|folder",
+        help="ไฟล์สื่อที่ ffmpeg รองรับ (mp4/mkv/wav/ogg/mp3/mp2/m4a/webm ฯลฯ) — "
+             "หลายตัวหรือโฟลเดอร์ = โหมด batch (txt รายคลิป) · ไม่ใส่ก็ได้ถ้าใช้ --files-from")
     parser.add_argument(
         "-l", "--lang", dest="lang", default="auto", metavar="lang",
         help="ภาษาพูด เช่น en/ja/zh หรือ auto · batch ให้หลายภาษาคั่นลูกน้ำได้ "
@@ -870,9 +870,26 @@ def _looks_ghost(text):
     return " ".join(text.lower().split()) in GHOST_PHRASES
 
 
-def _is_suspicious(duration_s, text):
-    """คลิปน่าสงสัย = สั้นกว่า 1 วินาที หรือ ข้อความเป็นวลีหลอนที่พบบ่อย (หลักฐาน W1)"""
+# ค่าเฉลี่ยความมั่นใจต่ำกว่านี้ = น่าสงสัย (คลิปปกติของ W1 จริงอยู่ราว 0.80–0.97 —
+# คำตะโกนภาษาเอลฟ์ที่บังคับถอดอังกฤษจะต่ำกว่ามาก · ปรับได้เมื่อมีข้อมูลจริงมากขึ้น)
+SUSPICIOUS_AVG_P = 0.70
+
+
+def _is_suspicious(duration_s, text, avg_p=None, lang_mismatch=False):
+    """คลิปน่าสงสัย (ให้คนตรวจก่อน) — รวมสัญญาณทุกตัวที่มี:
+
+    - สั้นกว่า 1 วินาที หรือ วลีหลอนที่พบบ่อย (หลักฐาน W1)
+    - avg_p ต่ำกว่าเกณฑ์ (บังคับถอดผิดภาษา/เสียงร้อง ได้ token prob ต่ำ) —
+      จับคำตะโกนภาษาเอลฟ์สั้น ๆ ("Aelirenn!") ที่ langid จับไม่ได้เพราะภาษาเอลฟ์
+      ไม่อยู่ใน 100 ภาษาของ whisper และคำเดี่ยวสั้น ๆ มันจะเลือกภาษาใกล้เคียง
+      (เช่น en p=0.97) เสมอ
+    - lang_mismatch (ตรวจพบว่าไม่ใช่ภาษาที่สั่ง — ใช้ได้กับประโยคยาวพอ)
+    """
+    if lang_mismatch:
+        return True
     if duration_s is not None and duration_s < 1.0:
+        return True
+    if avg_p is not None and avg_p < SUSPICIOUS_AVG_P:
         return True
     return _looks_ghost(text)
 
@@ -894,7 +911,14 @@ class _BatchItem:
     lang_p: object = None       # ความน่าจะเป็นของภาษาที่ตรวจพบ 0..1
 
 
-def _batch_summary(items):
+def _lang_mismatch_value(item, requested_lang):
+    """1 = ตรวจพบว่าไม่ใช่ภาษาที่สั่ง · "" = ไม่ได้ตรวจ/สั่ง auto"""
+    if item.lang and requested_lang and requested_lang != "auto":
+        return 0 if item.lang == requested_lang else 1
+    return ""
+
+
+def _batch_summary(items, requested_lang=""):
     """สรุปผล (สำเร็จ/ว่าง/พัง/ข้าม) + รายการคลิปน่าสงสัย — พิมพ์ stderr เสมอแม้ --quiet"""
     groups = {"ok": [], "empty": [], "fail": [], "skip": []}
     for it in items:
@@ -912,7 +936,8 @@ def _batch_summary(items):
             lines.append("  %s …อีก %d รายการ" % (label, len(group) - cap))
     suspicious = [
         it for it in groups["ok"] + groups["empty"]
-        if _is_suspicious(it.duration, it.text)
+        if _is_suspicious(it.duration, it.text, it.avg_p,
+                          _lang_mismatch_value(it, requested_lang) == 1)
     ]
     if suspicious:
         lines.append("คลิปน่าสงสัย (ตรวจก่อน) %d:" % len(suspicious))
@@ -943,9 +968,7 @@ def _write_manifest(items, out_dir, requested_lang=""):
                              "low_conf_pct", "lang", "lang_p", "lang_mismatch",
                              "suspicious", "text_chars", "note"])
             for it in items:
-                mismatch = ""
-                if it.lang and requested_lang and requested_lang != "auto":
-                    mismatch = 0 if it.lang == requested_lang else 1
+                mismatch = _lang_mismatch_value(it, requested_lang)
                 writer.writerow([
                     it.stem,
                     it.src,
@@ -956,7 +979,8 @@ def _write_manifest(items, out_dir, requested_lang=""):
                     it.lang,
                     "" if it.lang_p is None else it.lang_p,
                     mismatch,
-                    1 if _is_suspicious(it.duration, it.text) else 0,
+                    1 if _is_suspicious(it.duration, it.text, it.avg_p,
+                                         mismatch == 1) else 0,
                     len(it.text),
                     it.note,
                 ])
@@ -1180,7 +1204,7 @@ def run_batch(args, say):
         all_items.extend(lang_items)
 
     say("progress: 100%% เสร็จ — ผลอยู่ที่ %s (สรุปรายคลิป: %s)" % (out_dir, MANIFEST_NAME))
-    fail_count = _batch_summary(all_items)
+    fail_count = _batch_summary(all_items, requested_lang=langs[0])
     return 2 if fail_count else 0
 
 
@@ -1202,6 +1226,8 @@ def main(argv=None):
     _force_utf8_streams()
     parser = build_parser()
     args = parser.parse_args(argv)
+    if not args.media and not args.files_from:
+        parser.error("ต้องระบุ media (ไฟล์/โฟลเดอร์) อย่างน้อยหนึ่งตัว หรือใช้ --files-from")
     if args.quiet:
         say = lambda _msg: None
     else:
