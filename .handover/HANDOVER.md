@@ -42,6 +42,26 @@
   ผู้ใช้ Windows จริงก็เจอเหมือนกัน) + regression test รัน `--help` จริงด้วย
   `PYTHONIOENCODING=cp1252` (แดงก่อนแก้ เขียวหลังแก้ ตรวจด้วย git stash แล้ว)
 
+## ผลใช้งานจริงฝั่ง ThaiW1Setup (2026-11-01 · W1 session รายงาน)
+
+- **W1 เปลี่ยนมาใช้ thaistt v0.2 แทนสคริปต์ชั่วคราวแล้ว** — 20 คลิปจริง 10 วินาที ถอดถูกหมด ·
+  ติดป้ายคลิปสั้นน่าสงสัย 4 คลิป ("Get Lost." ฯลฯ) **ถอดถูกทั้ง 4** → ป้ายน่าสงสัยเป็น
+  "ให้ตรวจก่อน" ไม่ใช่คำตัดสิน (ยังเก็บ heuristic เดิม — ข้อมูลยังน้อยเกินปรับเกณฑ์)
+- ฝั่ง W1 ทำแล้ว: `build/translate/whisper/names_en.txt` (~60 ชื่อ เช่น Eskel, Barghest,
+  Jethro, Vesna) สำหรับ `--prompt-file` · compare script อ่านผล thaistt + ชุดนำร่องเดิม ·
+  จดวิธีใช้ที่ `docs/whisper.md` แล้ว
+- **thaistt เพิ่ม `install.sh`** (commit นี้): symlink คำสั่งสั้น `thaistt` เข้า PATH —
+  ติดที่ `/opt/homebrew/bin/thaistt` บนเครื่องเจ้าของแล้ว (W1 เรียกสั้นได้เลย) ·
+  dest whitelist: /opt/homebrew/bin · /usr/local/bin · ~/.local/bin (ระวัง bin ของ
+  version manager — draft แรกเคยโดน sdkman จับไป)
+- **batch ปรับทำงานทีละกลุ่ม** (commit นี้): temp จำกัดขนาดต่อกลุ่ม (≤ batch-size ไฟล์)
+  แทนแปลงทั้งหมดก่อน — รัน ~18,000 คลิป temp ไม่บวมเป็น GB · progress % monotonic
+  ข้ามกลุ่ม · เทส 82 ตัวผ่านครบ + ทดสอบจริง 2 กลุ่ม (W1 6 คลิป --batch-size 3) ✓
+- **รอคำสั่งเจ้าของ**: ถอด W1 องก์ 2–บทส่งท้าย ~18,000 คลิป (~2 ชม. local ไม่กินโควต้า
+  LLM) — สั่งจากฝั่ง W1 ด้วย:
+  `thaistt <voices> -l en --format txt -o <outdir> -t 8 --prompt-file build/translate/whisper/names_en.txt`
+  (resume ได้ — พังตรงไหนรันซ้ำต่อจากนั้น) · ขอบเขตตรวจความหมายหลังถอด ค่อยตัดสินทีหลัง
+
 ## งานถัดไป
 
 - ~~v0.2 batch รายคลิป~~ **เสร็จแล้ว** (ดูสถานะปัจจุบัน) — ที่เหลือจากข้อเสนอแนะ W1:

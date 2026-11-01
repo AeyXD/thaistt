@@ -72,6 +72,16 @@ python3 thaistt.py <folder|ไฟล์หลายตัว> -l <lang> --format
 ผู้บริโภคหลัก: **TVox ใน THub-Launcher** (Phase S2 — Settings `stt_cli_path` +
 ปุ่มถอดเสียง) → SRT ร่างวิ่งเข้า Game Tool "Subtitles" ของ TFormat-Plugins
 
+## ติดตั้งเป็นคำสั่งสั้น `thaistt`
+
+```bash
+./install.sh                # symlink ไป /opt/homebrew/bin หรือ /usr/local/bin (ไม่ต้อง sudo)
+./install.sh --dest ~/.local/bin   # ระบุเอง
+./install.sh --uninstall    # ถอด
+```
+
+เป็น symlink เข้าโฟลเดอร์นี้ (ไม่คัดลอก) — `git pull` แล้วได้รุ่นใหม่ทันที
+
 ## การพัฒนา
 
 อ่าน `AGENT.md` ก่อนแตะโค้ดทุกครั้ง · สถานะงานล่าสุดอยู่ที่ `.handover/HANDOVER.md`

@@ -840,66 +840,78 @@ def run_batch(args, say):
             items.append(_BatchItem(src, stem, out_path, pos))
     todo = [it for it in items if not it.status]
     total = len(todo)
-    say("progress: 5%% เริ่ม batch %d ไฟล์ (ข้ามของเดิม %d) — แปลงเสียงขนาน %d งาน…"
-        % (len(items), len(items) - total, args.parallel_ffmpeg))
+    groups = [todo[i:i + args.batch_size] for i in range(0, total, args.batch_size)]
+    say("progress: 5%% เริ่ม batch %d ไฟล์ (ข้ามของเดิม %d) — %d กลุ่ม × สูงสุด %d "
+        "ไฟล์/กลุ่ม · ffmpeg ขนาน %d…"
+        % (len(items), len(items) - total, len(groups), args.batch_size,
+           args.parallel_ffmpeg))
 
-    with tempfile.TemporaryDirectory(prefix="thaistt-batch-") as tmpdir:
-        wavs_dir = os.path.join(tmpdir, "wavs")
-        os.makedirs(wavs_dir, exist_ok=True)
+    state = {"last_pct": 4, "converted": 0, "processed": 0}
 
-        lock = threading.Lock()
-        progress = {"done": 0, "pct": -1}
+    def say_pct(pct, message):
+        # % ต้องไปหน้าเดียว (ขึ้นเท่านั้น) — กันกระโดดถอยหลังตอนสลับเฟสระหว่างกลุ่ม
+        pct = min(95, max(5, pct))
+        if pct > state["last_pct"]:
+            state["last_pct"] = pct
+            say("progress: %d%% %s" % (pct, message))
 
-        def convert(it):
-            wav_path = os.path.join(wavs_dir, "%06d__%s.wav" % (it.idx, it.stem))
-            ok, err = _run_ffmpeg_one(ffmpeg_bin, it.src, wav_path)
-            with lock:
-                if ok:
-                    it.wav = wav_path
-                    it.duration = _read_wav_duration_seconds(wav_path)
-                else:
-                    it.status, it.note = "fail", "ffmpeg %s" % err
-                progress["done"] += 1
-                pct = 5 + 20 * progress["done"] // max(1, total)
-                if pct != progress["pct"]:
-                    progress["pct"] = pct
-                    say("progress: %d%% แปลงเสียง %d/%d…"
-                        % (pct, progress["done"], total))
+    # ทำทีละกลุ่ม: temp ถูกจำกัดขนาดต่อกลุ่มแทนการแปลงทั้งหมดก่อน —
+    # สำคัญกับชุดใหญ่ (W1 ~18,000 คลิป จะไม่มี WAV กองหลาย GB ใน temp)
+    for seq, group in enumerate(groups, 1):
+        with tempfile.TemporaryDirectory(prefix="thaistt-batch-") as tmpdir:
+            wavs_dir = os.path.join(tmpdir, "wavs")
+            os.makedirs(wavs_dir, exist_ok=True)
 
-        if todo:
-            with concurrent.futures.ThreadPoolExecutor(
-                    max_workers=min(args.parallel_ffmpeg, len(todo))) as pool:
-                list(pool.map(convert, todo))
+            lock = threading.Lock()
+            converted_here = {"ok": 0, "fail": 0}
 
-        converted = [it for it in todo if not it.status]
-        say("progress: 25%% แปลงเสียงเสร็จ %d/%d — ถอดเสียงชุดละ %d ไฟล์ต่อรอบ…"
-            % (len(converted), total, args.batch_size))
+            def convert(it):
+                wav_path = os.path.join(wavs_dir, "%06d__%s.wav" % (it.idx, it.stem))
+                ok, err = _run_ffmpeg_one(ffmpeg_bin, it.src, wav_path)
+                with lock:
+                    if ok:
+                        it.wav = wav_path
+                        it.duration = _read_wav_duration_seconds(wav_path)
+                        converted_here["ok"] += 1
+                    else:
+                        it.status, it.note = "fail", "ffmpeg %s" % err
+                        converted_here["fail"] += 1
+                    state["converted"] += 1
+                    say_pct(5 + 55 * state["converted"] // max(1, total),
+                            "แปลงเสียง %d/%d… (กลุ่ม %d/%d)"
+                            % (state["converted"], total, seq, len(groups)))
 
-        batches = [converted[i:i + args.batch_size]
-                   for i in range(0, len(converted), args.batch_size)]
-        for seq, batch in enumerate(batches, 1):
-            wavs = [it.wav for it in batch]
-            _ok, done = _run_whisper_multi(
-                whisper_bin, model, wavs, args.lang, args.threads, prompt, wavs_dir)
-            for it in batch:  # คลิปที่ชุดใหญ่ไม่ได้ผล → เรียกรายไฟล์แยกคลิปพิษ
-                if not done.get(it.wav):
-                    try:
-                        _run_whisper(whisper_bin, model, it.wav, args.lang,
-                                     it.wav + ".txt", "txt", args.threads, prompt,
-                                     None, say)
-                    except ThaisttError as exc:
-                        it.status, it.note = "fail", str(exc)
-            for it in batch:
-                if it.status == "fail":
-                    continue
-                raw = it.wav + ".txt"
-                if os.path.isfile(raw):
-                    it.text = _read_text(raw).strip()
-                    it.status = "ok" if it.text else "empty"
-                else:
-                    it.status, it.note = "fail", "whisper ไม่ได้ผลลัพธ์"
-            say("progress: %d%% ถอดเสียงชุด %d/%d…"
-                % (25 + 70 * seq // max(1, len(batches)), seq, len(batches)))
+            if group:
+                with concurrent.futures.ThreadPoolExecutor(
+                        max_workers=min(args.parallel_ffmpeg, len(group))) as pool:
+                    list(pool.map(convert, group))
+
+            ready = [it for it in group if not it.status]
+            if ready:
+                wavs = [it.wav for it in ready]
+                _ok, done = _run_whisper_multi(
+                    whisper_bin, model, wavs, args.lang, args.threads, prompt,
+                    wavs_dir)
+                for it in ready:  # คลิปที่ชุดใหญ่ไม่ได้ผล → เรียกรายไฟล์แยกคลิปพิษ
+                    if not done.get(it.wav):
+                        try:
+                            _run_whisper(whisper_bin, model, it.wav, args.lang,
+                                         it.wav + ".txt", "txt", args.threads,
+                                         prompt, None, say)
+                        except ThaisttError as exc:
+                            it.status, it.note = "fail", str(exc)
+                for it in ready:
+                    if it.status == "fail":
+                        continue
+                    raw = it.wav + ".txt"
+                    if os.path.isfile(raw):
+                        it.text = _read_text(raw).strip()
+                        it.status = "ok" if it.text else "empty"
+                    else:
+                        it.status, it.note = "fail", "whisper ไม่ได้ผลลัพธ์"
+            state["processed"] += len(group)
+            say_pct(60 + 35 * state["processed"] // max(1, total),
+                    "ถอดเสียงกลุ่ม %d/%d เสร็จ…" % (seq, len(groups)))
 
     # เขียนผลลัพธ์นอก temp — ok/empty เขียนไฟล์เสมอ (ว่าง = ไฟล์เปล่า) ให้ resume สม่ำเสมอ
     for it in items:
