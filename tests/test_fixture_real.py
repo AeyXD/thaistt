@@ -145,6 +145,19 @@ class TestBatchReal(unittest.TestCase):
             self.assertGreater(len(fh.read().strip()), 0, "jfk ต้องมีข้อความ")
         self.assertTrue(os.path.isfile(os.path.join(self.outdir, "sine.txt")),
                         "คลิปเงียบก็ต้องได้ไฟล์ (ว่าง)")
+        # manifest (v0.3): สถานะ/ความยาว/ความมั่นใจต่อคลิป เครื่องอ่านได้
+        import csv
+        with open(os.path.join(self.outdir, thaistt.MANIFEST_NAME),
+                  encoding="utf-8-sig", newline="") as fh:
+            rows = {r["id"]: r for r in csv.DictReader(fh)}
+        self.assertEqual(rows["jfk"]["status"], "ok")
+        self.assertGreater(float(rows["jfk"]["duration_s"]), 10.0)
+        self.assertTrue(rows["jfk"]["avg_p"] != "",
+                        "build นี้มี -ojf → ต้องมีค่าความมั่นใจต่อคลิป")
+        self.assertTrue(0.0 <= float(rows["jfk"]["avg_p"]) <= 1.0)
+        self.assertIn(int(rows["jfk"]["low_conf_pct"]), range(0, 101))
+        # sine 440Hz ไม่ใช่เงียบสนิท — whisper อาจถอดอะไรออกมา (ok) หรือว่าง (empty)
+        self.assertIn(rows["sine"]["status"], ("ok", "empty"))
         # resume: รอบสอง (media ชุดเดิม) ต้องข้ามทั้งคู่และไม่พัง
         code2, err2 = self._run([JFK_WAV, sine])
         self.assertEqual(code2, 0, err2)

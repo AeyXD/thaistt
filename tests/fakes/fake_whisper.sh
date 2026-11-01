@@ -21,6 +21,7 @@ if [ "$1" = "--help" ]; then
   printf '  -otxt,     --output-txt           [false  ] output result in a text file\n'
   printf '  -of FNAME, --output-file FNAME    [       ] output file path (without file extension)\n'
   printf '             --prompt PROMPT        [       ] initial prompt\n'
+  printf '  -ojf,      --output-json-full     [false  ] include more information in the JSON file\n'
   exit 0
 fi
 mode=""
@@ -43,11 +44,22 @@ $a" ;; esac
   prev="$a"
 done
 text="${THAISTT_TEST_WHISPER_TEXT:-Hello there friend.}"
+want_json=0
+for a in "$@"; do
+  [ "$a" = "-ojf" ] && want_json=1
+done
+emit_json() {
+  # เลียน -ojf ของ build จริง: token ละ p — ข้อความ 4 token (0.2/0.9/0.95/0.61)
+  # → avg_p 0.665 · low_conf_pct 25 · [_BEG_] เป็น token พิเศษไม่นับ
+  [ "$want_json" = "1" ] || return 0
+  printf '%s' '{"transcription":[{"text":"x","tokens":[{"text":"[_BEG_]","p":0.2},{"text":" Hey","p":0.2},{"text":" there","p":0.9},{"text":" friend.","p":0.95},{"text":" now","p":0.61}]}]}' > "$1"
+}
 if [ -z "$target" ]; then
   # batch: ผลลัพธ์ข้างไฟล์ input ทุกตัว
   echo "$inputs" | while IFS= read -r f; do
     [ -n "$f" ] || continue
     printf '%s\n' "$text" > "$f.txt"
+    emit_json "$f.json"
   done
   exit 0
 fi
@@ -71,4 +83,9 @@ Hello there friend.
 00:00:05,000 --> 00:00:07,500
 This part comes after a long pause.
 SRT
+fi
+if [ "$want_json" = "1" ]; then
+  echo "$inputs" | while IFS= read -r f; do
+    [ -n "$f" ] && emit_json "$f.json"
+  done
 fi

@@ -5,6 +5,7 @@
 - TestBatchCliContract: ทาง error ของ CLI batch (ทุกแพลตฟอร์ม)
 - TestBatchWithFakes: integration ท่อเต็มด้วย fake binaries (POSIX — CI Windows ข้าม)
 """
+import csv
 import io
 import os
 import shutil
@@ -14,6 +15,7 @@ import unittest
 import wave
 from contextlib import redirect_stderr
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -93,6 +95,64 @@ class TestBatchHelpers(unittest.TestCase):
         self.assertTrue(thaistt._is_suspicious(None, "Thank you."))    # วลีหลอน
         self.assertFalse(thaistt._is_suspicious(None, "hello"))
         self.assertFalse(thaistt._is_suspicious(1.2, "hello there"))
+
+    def test_mp2_is_media(self):
+        # W2: เสียง w2speech เป็น mp2 (เคยต้องเปลี่ยนชื่อเป็น .mp3 เอง)
+        self.assertTrue(thaistt._is_media_name("voice.mp2"))
+        self.assertFalse(thaistt._is_media_name("voice.w2speech"))
+
+    def test_files_from_parser(self):
+        listfile = os.path.join(self.tmp, "list.txt")
+        one = self._touch("one.ogg")
+        two = self._touch("two.mp3")
+        with open(listfile, "w", encoding="utf-8") as fh:
+            fh.write("# คลิปที่ต้องถอดซ้ำ\n\n%s\n  %s  \n# หมายเหตุ\n" % (one, two))
+        self.assertEqual(thaistt._parse_files_from(listfile), [one, two])
+
+    def test_files_from_stdin(self):
+        one = self._touch("one.ogg")
+        fake_stdin = io.StringIO("# comment\n%s\n\n" % one)
+        with mock.patch("sys.stdin", new=fake_stdin):
+            self.assertEqual(thaistt._parse_files_from("-"), [one])
+
+    def test_files_from_missing_raises(self):
+        with self.assertRaises(thaistt.ThaisttError):
+            thaistt._parse_files_from(os.path.join(self.tmp, "nope.txt"))
+
+    def test_prompt_token_warning(self):
+        def make_args(prompt="", prompt_file=None):
+            return SimpleNamespace(prompt=prompt, prompt_file=prompt_file)
+
+        warnings = []
+        say = warnings.append
+        # สั้น = เงียบ
+        self.assertEqual(thaistt._resolve_prompt(make_args(prompt="Eskel, Geralt"), say),
+                         "Eskel, Geralt")
+        self.assertEqual(warnings, [])
+        # ยาวเกิน ~224 token → เตือน (whisper ตัดส่วนเกินเงียบ ๆ)
+        long_prompt = "Name " * 250  # ~1250 ตัวอักษร ≈ 313 token
+        thaistt._resolve_prompt(make_args(prompt=long_prompt), say)
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("token", warnings[0])
+
+    def test_confidence_from_json(self):
+        import json as _json
+        jpath = os.path.join(self.tmp, "a.wav.json")
+        with open(jpath, "w", encoding="utf-8") as fh:
+            _json.dump({"transcription": [{"tokens": [
+                {"text": "[_BEG_]", "p": 0.2},      # token พิเศษ — ไม่นับ
+                {"text": " Hey", "p": 0.2},          # ต่ำ (<0.5)
+                {"text": " there", "p": 0.9},
+                {"text": " friend.", "p": 0.95},
+                {"text": " now", "p": 0.61},
+            ]}]}, fh)
+        self.assertEqual(thaistt._confidence_from_json(jpath), (0.665, 25))
+        # ไม่มีไฟล์ / ไม่มี token ข้อความ → None (build ไม่รองรับ/คลิปเงียบ)
+        self.assertIsNone(thaistt._confidence_from_json(os.path.join(self.tmp, "nope.json")))
+        silent = os.path.join(self.tmp, "silent.json")
+        with open(silent, "w", encoding="utf-8") as fh:
+            fh.write('{"transcription":[]}')
+        self.assertIsNone(thaistt._confidence_from_json(silent))
 
 
 class TestBatchCliContract(unittest.TestCase):
@@ -182,6 +242,22 @@ class TestBatchCliContract(unittest.TestCase):
         code, err = self.run_main(["--format", "txt", "-o", self.m1])
         self.assertEqual(code, 2)
         self.assertIn("โฟลเดอร์ปลายทาง", err)
+
+    def test_force_rejected_in_single_mode(self):
+        env = dict(CLEAN_ENV)
+        argv = [self.m1, "-l", "en", "-o", os.path.join(self.tmp, "o.srt"), "--force"]
+        buf = io.StringIO()
+        with mock.patch.dict(os.environ, env, clear=True), redirect_stderr(buf):
+            code = thaistt.main(argv)
+        self.assertEqual(code, 2)
+        self.assertIn("--force ใช้กับโหมด batch", buf.getvalue())
+
+    def test_files_from_missing_file(self):
+        code, err = self.run_main(
+            ["--format", "txt",
+             "--files-from", os.path.join(self.tmp, "nope.txt")])
+        self.assertEqual(code, 2)
+        self.assertIn("--files-from", err)
 
 
 @unittest.skipUnless(os.name == "posix", "fake binaries เป็น shell script (POSIX เท่านั้น)")
@@ -362,6 +438,68 @@ class TestBatchWithFakes(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertNotIn("progress:", err)
         self.assertIn("สรุป batch", err)
+
+    # ---------------- v0.3: manifest / confidence / --force / --files-from ----
+
+    def read_manifest(self):
+        path = os.path.join(self.outdir, thaistt.MANIFEST_NAME)
+        with open(path, "r", encoding="utf-8-sig", newline="") as fh:
+            return list(csv.DictReader(fh))
+
+    def test_manifest_with_confidence(self):
+        code, err = self.run_batch(self.media[:2])
+        self.assertEqual(code, 0, err)
+        rows = {r["id"]: r for r in self.read_manifest()}
+        self.assertEqual(set(rows), {"m1", "m2"})
+        for r in rows.values():
+            self.assertEqual(r["status"], "ok")
+            self.assertAlmostEqual(float(r["duration_s"]), 1.0, delta=0.05)
+            # fake ส่ง token ข้อความ 4 ตัว (p = 0.2/0.9/0.95/0.61) → avg 0.665 · ต่ำ 25%
+            self.assertEqual(r["avg_p"], "0.665")
+            self.assertEqual(r["low_conf_pct"], "25")
+            self.assertEqual(r["suspicious"], "0")
+            self.assertEqual(r["text_chars"], "19")  # "Hello there friend."
+        self.assertIn("สรุปรายคลิป", err)
+
+    def test_manifest_marks_suspicious_and_fail(self):
+        code, _ = self.run_batch(
+            self.media[:2],
+            env_extra={"THAISTT_TEST_WHISPER_TEXT": "Thank you.",
+                       "THAISTT_TEST_FFMPEG_FAILSUBSTR": "m2.wav"})
+        self.assertEqual(code, 2)
+        rows = {r["id"]: r for r in self.read_manifest()}
+        self.assertEqual(rows["m1"]["status"], "ok")
+        self.assertEqual(rows["m1"]["suspicious"], "1")  # วลีหลอน
+        self.assertEqual(rows["m2"]["status"], "fail")
+
+    def test_manifest_on_resume_all_skip(self):
+        self.run_batch(self.media[:2])
+        code, err2 = self.run_batch(self.media[:2])
+        self.assertEqual(code, 0)
+        rows = self.read_manifest()
+        self.assertEqual([r["status"] for r in rows], ["skip", "skip"])
+
+    def test_force_reprocesses_existing(self):
+        code1, _ = self.run_batch(self.media[:2])
+        self.assertEqual(code1, 0)
+        wh_before = len(self.lines(self.log_wh))
+        code2, err2 = self.run_batch(self.media[:2], ["--force"])
+        self.assertEqual(code2, 0, err2)
+        self.assertIn("ข้ามของเดิม 0", err2)
+        self.assertGreater(len(self.lines(self.log_wh)), wh_before,
+                           "--force ต้องเรียก whisper ใหม่")
+        rows = self.read_manifest()
+        self.assertEqual([r["status"] for r in rows], ["ok", "ok"])
+
+    def test_files_from_selects_clips(self):
+        listfile = os.path.join(self.tmp, "pick.txt")
+        with open(listfile, "w", encoding="utf-8") as fh:
+            fh.write("# ถอดซ้ำเฉพาะที่ชื่อเพี้ยน\n%s\n" % self.media[1])
+        code, err = self.run_batch([self.media[0]], ["--files-from", listfile])
+        self.assertEqual(code, 0, err)
+        self.assertIn("สำเร็จ 2", err)  # media 1 + files-from 1
+        rows = {r["id"]: r for r in self.read_manifest()}
+        self.assertEqual(set(rows), {"m1", "m2"})
 
 
 if __name__ == "__main__":

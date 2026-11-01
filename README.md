@@ -12,8 +12,10 @@
 
 ## สถานะ
 
-✅ **v0.2 พร้อมใช้** — v0.1 (Phase S0 ตามสเปก `../THub Studio/docs/spec-vox-whisper.md`)
-+ **โหมด batch รายคลิป** (ทดแทนสคริปต์ชั่วคราว xargs+run.sh ของ ThaiW1Setup)
+✅ **v0.3 พร้อมใช้** — v0.1 (Phase S0 ตามสเปก `../THub Studio/docs/spec-vox-whisper.md`)
++ **โหมด batch รายคลิป** v0.2 (ทดแทนสคริปต์ชั่วคราว xargs+run.sh ของ ThaiW1Setup)
++ v0.3 ตามขอใช้จริงของ W2: **manifest CSV ต่อคลิป + ความมั่นใจ (avg_p) + .mp2 +
+--files-from / --force / เตือนความยาว prompt**
 · Python **stdlib-only** · รองรับ whisper.cpp หลาย build (ธง output สองสไตล์ probe อัตโนมัติ)
 
 ## การใช้งาน — ไฟล์เดียว → ซับร่าง SRT
@@ -45,7 +47,8 @@ python3 thaistt.py <media> -l <lang|auto> -o <draft.srt> \
 ```bash
 python3 thaistt.py <folder|ไฟล์หลายตัว> -l <lang> --format txt -o <outdir> \
     [--batch-size 250] [-t 8] [--prompt "..."] [--prompt-file <ชื่อไฟล์>] \
-    [--parallel-ffmpeg 8] [--model <path>] [--quiet]
+    [--parallel-ffmpeg 8] [--files-from <list.txt|->] [--force] \
+    [--model <path>] [--quiet]
 ```
 
 - **whisper-cli รอบเดียวต่อชุด** (multi `-f` · default 250 ไฟล์ — reuse การโหลดโมเดล
@@ -56,8 +59,18 @@ python3 thaistt.py <folder|ไฟล์หลายตัว> -l <lang> --format
   ให้คนตรวจรู้ก่อน
 - ทนคลิปพังบางส่วน: คลิปที่ ffmpeg/whisper พังถูกแยกรายงาน **ไม่หยุดทั้งชุด**
   (ชุดใหญ่พัง → เรียกซ้ำรายไฟล์อัตโนมัติเพื่อแยกคลิปพิษ) · มีคลิปพัง = exit 2
-- โฟลเดอร์ดูแบบแบน กรองเฉพาะนามสกุลสื่อ (ไฟล์ `.say`/ไฟล์ซ่อนไม่โดน) ·
-  ชื่อคลิป (ไม่รวมนามสกุล) ชนกัน → ไฟล์แรกใช้ ที่เหลือข้ามพร้อมรายงาน
+- โฟลเดอร์ดูแบบแบน กรองเฉพาะนามสกุลสื่อ (ไฟล์ `.say`/ไฟล์ซ่อนไม่โดน · รับ `.mp2`
+  ตามเสียง w2speech ของ W2) · ชื่อคลิป (ไม่รวมนามสกุล) ชนกัน → ไฟล์แรกใช้ ที่เหลือข้ามพร้อมรายงาน
+- **manifest ต่อรอบ: `<outdir>/.thaistt-manifest.csv`** (utf-8-sig เปิดใน Excel ได้) —
+  `id · file · status(ok/empty/fail/skip) · duration_s · avg_p · low_conf_pct ·
+  suspicious · text_chars · note` — ฝั่งเกมไม่ต้องเดาความยาวจากขนาดไฟล์ และเรียง
+  `avg_p` น้อย→มากได้ลำดับ "ตรวจก่อน" ทันที (ค่าความมั่นใจมาจาก `-ojf` ของ
+  whisper.cpp — token ละ p · build ไม่รองรับ = คอลัมน์ว่าง)
+- `--files-from list.txt` (หรือ `-` = stdin · บรรทัดละ path · `#` คอมเมนต์) — เลือก id
+  เฉพาะที่ต้องการโดยไม่ต้องแยกโฟลเดอร์ต่อองก์ · `--force` ถอดซ้ำแม้มีผลแล้ว
+  (เช่นหลังเพิ่มชื่อใน --prompt-file แล้วอยากถอดบรรทัดที่ชื่อเพี้ยนใหม่)
+- `--prompt`/`--prompt-file` ยาวเกิน ~224 token (≈896 ตัวอักษร) → เตือนทันที
+  (whisper ตัดส่วนเกินเงียบ ๆ — จัดชื่อสำคัญไว้ต้นไฟล์)
 
 ตัวอย่างผลจริง (W1 voices 20 คลิป, large-v3-turbo, M-series — 9.6 วิ):
 

@@ -32,7 +32,10 @@ args → env THAISTT_WHISPER/THAISTT_MODEL/THAISTT_FFMPEG → PATH) · temp ท�
 """
 import argparse
 import concurrent.futures
+import csv
 import dataclasses
+import json
+import math
 import os
 import re
 import shutil
@@ -43,7 +46,7 @@ import threading
 import wave
 
 APP = "thaistt"
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 
 ENV_WHISPER = "THAISTT_WHISPER"
 ENV_MODEL = "THAISTT_MODEL"
@@ -58,11 +61,21 @@ DEFAULT_MIN_GAP = 0.8
 DEFAULT_BATCH_SIZE = 250
 DEFAULT_PARALLEL_FFMPEG = 8
 
-# นามสกุลที่รับเมื่อขยายโฟลเดอร์ (W1 voices มี .say ปน — ต้องกรอง)
+# นามสกุลที่รับเมื่อขยายโฟลเดอร์ (W1 voices มี .say ปน — ต้องกรอง ·
+# .mp2 ตามขอใช้จริงของ W2: เสียง w2speech เป็น mp2)
 MEDIA_EXTS = frozenset(
     ".mp4 .mkv .avi .mov .webm .ts .mpg .mpeg .flv .wmv "
-    ".wav .ogg .oga .mp3 .m4a .aac .flac .opus .wma".split()
+    ".wav .ogg .oga .mp3 .mp2 .m4a .aac .flac .opus .wma".split()
 )
+
+# ชื่อไฟล์สรุปผลงาน batch ที่ฝั่งเกมอ่านเครื่องได้ (W2: voice_en.py) —
+# ขึ้นต้นจุดจึง: ถูกกรองทิ้งเมื่อชี้ outdir เดียวกับโฟลเดอร์สื่อในรอบถัดไป
+MANIFEST_NAME = ".thaistt-manifest.csv"
+
+# ขอบตัดประมาณของ --prompt: whisper รับได้ ~n_text_ctx/2 ≈ 224 token (ตัดเกินเงียบ ๆ)
+# ประมาณ 4 ตัวอักษร/token (รายชื่ออังกฤษ) → ~896 ตัวอักษร (สอดคล้องเกณฑ์ 900 ที่ W2 ใช้เอง)
+PROMPT_TOKEN_LIMIT = 224
+PROMPT_CHARS_PER_TOKEN = 4.0
 
 # โฟลเดอร์โมเดลตามธรรมเนียมเครื่องเจ้าของ (W1/W2) — ค้นเป็นค่าปริยายเมื่อไม่ได้ระบุ
 DEFAULT_MODEL_DIR = "~/.local/share/whisper-models"
@@ -342,11 +355,41 @@ def _run_ffmpeg(ffmpeg_bin, media, wav_path, range_pair):
 
 _PROG_RE = re.compile(r"progress\s*=\s*(\d+)\s*%")
 
+# token พิเศษของ whisper ([_BEG_] [_EOT_] [_TT_48] …) — ไม่นับเข้าความมั่นใจข้อความ
+_SPECIAL_TOKEN_RE = re.compile(r"^\[_.+\]$")
+
+# ค่าความมั่นใจต่ำกว่านี้ถือว่า "มั่นใจต่ำ" (manifest: low_conf_pct)
+LOW_CONF_THRESHOLD = 0.5
+
+
+def _confidence_from_json(json_path):
+    """อ่าน `<wav>.json` จากธง -ojf ของ whisper.cpp → ความมั่นใจต่อคลิป
+
+    แต่ละ token มี p (probability 0..1) — คำนวณค่าเฉลี่ย + % ของ token ที่มั่นใจต่ำ
+    คืน (avg_p, low_conf_pct) หรือ None เมื่อไม่มีไฟล์/parse ไม่ได้/ไม่มี token ข้อความ
+    """
+    try:
+        with open(json_path, "r", encoding="utf-8", errors="replace") as fh:
+            data = json.load(fh)
+        probs = [
+            tok["p"]
+            for seg in data.get("transcription", [])
+            for tok in seg.get("tokens", [])
+            if isinstance(tok.get("p"), (int, float))
+            and not _SPECIAL_TOKEN_RE.match(str(tok.get("text", "")))
+        ]
+    except Exception:
+        return None
+    if not probs:
+        return None
+    low = sum(1 for p in probs if p < LOW_CONF_THRESHOLD)
+    return round(sum(probs) / len(probs), 3), round(100 * low / len(probs))
+
 
 def _probe_whisper(whisper_bin):
-    """อ่าน --help เพื่อจับสไตล์ธง output และมี --prompt ไหม
+    """อ่าน --help เพื่อจับสไตล์ธง output · มี --prompt / -ojf (json เต็ม) ไหม
 
-    คืน (fname_style, has_prompt) หรือ None เมื่อสอบถามไม่ได้ (จะ fallback เอง)
+    คืน (fname_style, has_prompt, has_json) หรือ None เมื่อสอบถามไม่ได้ (fallback เอง)
     """
     try:
         proc = subprocess.run(
@@ -366,14 +409,17 @@ def _probe_whisper(whisper_bin):
             break
     fname_style = "FNAME" in line
     has_prompt = "--prompt" in text
-    return fname_style, has_prompt
+    has_json = "--output-json-full" in text
+    return fname_style, has_prompt, has_json
 
 
 def _whisper_argv(whisper_bin, model, wav, lang, out_path, fmt, threads, prompt,
-                  fname_style, has_prompt, with_pp):
+                  fname_style, has_prompt, with_pp, json_out=False):
     cmd = [whisper_bin, "-m", model, "-f", wav, "-l", lang]
     if with_pp:
         cmd += ["-pp"]
+    if json_out:
+        cmd += ["-ojf"]  # json เต็มพร้อม p ต่อ token → ความมั่นใจต่อคลิปใน manifest
     if fname_style:
         # รุ่นที่รับชื่อไฟล์ตรง ๆ
         cmd += (["-osrt", out_path] if fmt == "srt" else ["-otxt", out_path])
@@ -419,20 +465,21 @@ def _spawn_streaming_stderr(cmd, cwd, on_line):
 
 
 def _run_whisper(whisper_bin, model, wav, lang, out_path, fmt, threads, prompt,
-                 on_whisper_pct, say):
-    """เรียก whisper.cpp ให้ได้ไฟล์ผลลัพธ์ที่ out_path แน่นอน
+                 on_whisper_pct, say, json_out=False):
+    """เรียก whisper.cpp ให้ได้ไฟล์ผลลัพธ์ที่ out_path แน่นอน (ไฟล์เดียว)
 
     เลือกสไตล์ธงจากการ probe + ลอง fallback อีกสไตล์/ตัด -pp ตามลำดับ —
     รันโดย cwd = ไดเรกทอรีของ out_path (temp) ไฟล์ข้างทางจาก build ที่ตั้งชื่อ
-    ตาม input จึงตกอยู่ใน temp และถูกล้างไปด้วยเสมอ
+    ตาม input จึงตกอยู่ใน temp และถูกล้างไปด้วยเสมอ ·
+    json_out: ขอ -ojf เพิ่ม (ความมั่นใจต่อ token — ผู้เรียกอ่าน <out>.json เอง)
     """
     workdir = os.path.dirname(out_path) or "."
     probe = _probe_whisper(whisper_bin)
     if probe is None:
-        fname_style, has_prompt = True, True
+        fname_style, has_prompt, has_json = True, True, False
         style_order = [True, False]
     else:
-        fname_style, has_prompt = probe
+        fname_style, has_prompt, has_json = probe
         style_order = [fname_style, not fname_style]
     if prompt and not has_prompt:
         say("คำเตือน: build ของ whisper.cpp นี้ไม่มีตัวเลือก --prompt — ข้ามคำใบ้ที่ให้มา")
@@ -444,7 +491,9 @@ def _run_whisper(whisper_bin, model, wav, lang, out_path, fmt, threads, prompt,
         cmd = _whisper_argv(
             whisper_bin, model, wav, lang, out_path, fmt, threads, prompt,
             style, has_prompt, with_pp,
+            json_out=json_out and has_json,
         )
+
         def on_line(line, _map=on_whisper_pct):
             m = _PROG_RE.search(line)
             if m and _map:
@@ -465,22 +514,29 @@ def _run_whisper(whisper_bin, model, wav, lang, out_path, fmt, threads, prompt,
 def _run_whisper_multi(whisper_bin, model, wav_paths, lang, threads, prompt, workdir):
     """เรียก whisper.cpp รอบเดียวด้วยหลายไฟล์ — หัวใจของโหมด batch (reuse โหลดโมเดล)
 
-    ใช้สไตล์ bool ล้วน: `-f w1 -f w2 … -otxt` (ไม่มี -of) → build ที่รองรับ multi-input
-    (ยืนยันกับ build จริง) เขียน `<wav>.txt` ข้าง input ทุกตัว · สไตล์ FNAME map ผล
-    ต่อไฟล์ไม่ได้ → คืน not-ok เพื่อให้ผู้เรียกเฟลอแบ็กเป็นรายไฟล์แทน
+    ใช้สไตล์ bool ล้วน: `-f w1 -f w2 … -otxt [-ojf]` (ไม่มี -of) → build ที่รองรับ
+    multi-input (ยืนยันกับ build จริง) เขียน `<wav>.txt` (+ `<wav>.json` เมื่อมี -ojf)
+    ข้าง input ทุกตัว · สไตล์ FNAME map ผลต่อไฟล์ไม่ได้ → คืน not-ok เพื่อให้ผู้เรียก
+    เฟลอแบ็กเป็นรายไฟล์แทน · ไม่ใส่ -pp (progress ของ batch อิงระดับกลุ่มของเราเอง)
     คืน (ผ่านทั้งชุด?, {wav: มีไฟล์ผลแล้วหรือยัง})
     """
     probe = _probe_whisper(whisper_bin)
-    fname_style = probe[0] if probe else False
+    if probe is None:
+        fname_style, has_prompt, has_json = False, True, False
+    else:
+        fname_style, has_prompt, has_json = probe
     if fname_style:
         return False, {w: os.path.isfile(w + ".txt") for w in wav_paths}
     cmd = [whisper_bin, "-m", model]
     for wav in wav_paths:
         cmd += ["-f", wav]
-    cmd += ["-l", lang, "-pp", "-otxt"]
+    cmd += ["-l", lang]
+    if has_json:
+        cmd += ["-ojf"]
+    cmd += ["-otxt"]
     if threads:
         cmd += ["-t", str(threads)]
-    if prompt:
+    if prompt and has_prompt:
         cmd += ["--prompt", prompt]
     try:
         rc, _tail = _spawn_streaming_stderr(cmd, workdir, None)
@@ -510,9 +566,9 @@ def _write_text(path, content):
         raise ThaisttError("เขียนไฟล์ %s ไม่ได้: %s" % (path, exc))
 
 
-def _resolve_prompt(args):
+def _resolve_prompt(args, say):
     """--prompt ตรง ๆ หรือ --prompt-file (รายชื่อตัวละคร/ศัพท์เฉพาะ ตามข้อเสนอ W1)
-    → ข้อความ prompt สำหรับ whisper (long flag --prompt)"""
+    → ข้อความ prompt สำหรับ whisper (long flag --prompt) · เตือนเมื่อน่าจะโดนตัดเกินขอบ"""
     if args.prompt and args.prompt_file:
         raise ThaisttError("ใช้ --prompt หรือ --prompt-file อย่างใดอย่างหนึ่ง ไม่ใช่พร้อมกัน")
     if args.prompt_file:
@@ -522,15 +578,37 @@ def _resolve_prompt(args):
         joined = " ".join(_read_text(path).split())
         if not joined:
             raise ThaisttError("ไฟล์ --prompt-file ว่างเปล่า: %s" % path)
-        return joined
-    return args.prompt or ""
+    else:
+        joined = args.prompt or ""
+    if joined:
+        est_tokens = math.ceil(len(joined) / PROMPT_CHARS_PER_TOKEN)
+        if est_tokens > PROMPT_TOKEN_LIMIT:
+            say(
+                "คำเตือน: คำใบ้ยาว ~%d token (ประมาณ %d ตัวอักษร) เกินขอบ ~%d token ของ "
+                "whisper — ส่วนเกินถูกตัดทิ้งเงียบ ๆ (จัดลำดับชื่อสำคัญไว้ต้นไฟล์ หรือแบ่งถอดเป็นชุด)"
+                % (est_tokens, len(joined), PROMPT_TOKEN_LIMIT))
+    return joined
+
+
+def _parse_files_from(spec):
+    """--files-from FILE|'-': รายการ path บรรทัดละทาง · ข้ามบรรทัดว่าง/#comment
+    (W2: เลือก id ที่ต้องการถอดโดยไม่ต้องแยกโฟลเดอร์ต่อองก์)"""
+    if spec == "-":
+        lines = sys.stdin.read().splitlines()
+    else:
+        path = os.path.abspath(os.path.expanduser(spec))
+        if not os.path.isfile(path):
+            raise ThaisttError("ไม่พบไฟล์ --files-from: %s" % path)
+        lines = _read_text(path).splitlines()
+    paths = [ln.strip() for ln in lines]
+    return [p for p in paths if p and not p.startswith("#")]
 
 
 def run_pipeline(args, say):
     """ห่วงหลัก 0 → 100% · คืน exit code (0/2) · ThaisttError โยนขึ้นให้ main จัด"""
     # ตรวจ --range ก่อน (ถูกสุด ผิดชี้ทันที)
     range_pair = parse_range(args.range) if args.range else None
-    prompt = _resolve_prompt(args)
+    prompt = _resolve_prompt(args, say)
 
     if args.max_chars < 1:
         raise ThaisttError("--max-chars ต้อง ≥ 1 (ได้ %d)" % args.max_chars)
@@ -542,6 +620,8 @@ def run_pipeline(args, say):
         raise ThaisttError("-t/--threads ต้อง ≥ 1 (ได้ %d)" % args.threads)
 
     # โหมดไฟล์เดียว: media มีสมาชิกเดียวและไม่ใช่โฟลเดอร์ (dispatch ที่ main)
+    if args.force:
+        raise ThaisttError("--force ใช้กับโหมด batch เท่านั้น (โหมดไฟล์เดียวเขียนทับ output อยู่แล้ว)")
     media = os.path.abspath(os.path.expanduser(args.media[0]))
     if not os.path.isfile(media):
         raise ThaisttError("ไม่พบไฟล์สื่อ: %s" % media)
@@ -675,6 +755,12 @@ def build_parser():
         default=DEFAULT_PARALLEL_FFMPEG, metavar="N",
         help="batch: จำนวน ffmpeg ที่แปลงพร้อมกัน (default: %(default)s)")
     parser.add_argument(
+        "--files-from", dest="files_from", metavar="FILE",
+        help="batch: รายการไฟล์ที่จะถอด บรรทัดละ path ('-' = stdin · ข้ามบรรทัดว่าง/#comment) — เลือก id เฉพาะโดยไม่ต้องแยกโฟลเดอร์")
+    parser.add_argument(
+        "--force", dest="force", action="store_true",
+        help="batch: ถอดใหม่แม้มีผลลัพธ์อยู่แล้ว (ปกติข้ามเพื่อ resume — เช่นหลังเพิ่มชื่อใน --prompt-file)")
+    parser.add_argument(
         "--quiet", dest="quiet", action="store_true",
         help="เงียบ — ไม่พิมพ์ progress %% ที่ stderr (ข้อผิดพลาดยังแสดง)")
     return parser
@@ -749,6 +835,8 @@ class _BatchItem:
     status: str = ""      # ok | empty | fail | skip
     note: str = ""
     text: str = ""
+    avg_p: object = None        # ความมั่นใจเฉลี่ยต่อ token 0..1 (จาก -ojf ของ whisper)
+    low_conf_pct: object = None  # % ของ token ที่มั่นใจต่ำ (p < 0.5)
 
 
 def _batch_summary(items):
@@ -783,6 +871,35 @@ def _batch_summary(items):
     return len(groups["fail"])
 
 
+def _write_manifest(items, out_dir):
+    """สรุปผลรายคลิปแบบเครื่องอ่านได้ (CSV) — ฝั่งเกมไม่ต้องเดาความยาวจากขนาดไฟล์
+
+    คอลัมน์: id · file (abs) · status (ok/empty/fail/skip) · duration_s ·
+    avg_p (ความมั่นใจเฉลี่ยต่อ token 0..1 จาก -ojf — ว่างเมื่อ build ไม่รองรับ) ·
+    low_conf_pct (%token ที่มั่นใจต่ำ p<0.5) · suspicious (0/1) · text_chars · note
+    """
+    path = os.path.join(out_dir, MANIFEST_NAME)
+    try:
+        with open(path, "w", encoding="utf-8-sig", newline="") as fh:
+            writer = csv.writer(fh)
+            writer.writerow(["id", "file", "status", "duration_s", "avg_p",
+                             "low_conf_pct", "suspicious", "text_chars", "note"])
+            for it in items:
+                writer.writerow([
+                    it.stem,
+                    it.src,
+                    it.status or "?",
+                    "" if it.duration is None else "%.2f" % it.duration,
+                    "" if it.avg_p is None else it.avg_p,
+                    "" if it.low_conf_pct is None else it.low_conf_pct,
+                    1 if _is_suspicious(it.duration, it.text) else 0,
+                    len(it.text),
+                    it.note,
+                ])
+    except OSError as exc:
+        raise ThaisttError("เขียนไฟล์สรุป %s ไม่ได้: %s" % (path, exc))
+
+
 def run_batch(args, say):
     """batch: ขยายรายการ → resume ข้ามของเดิม → แปลงขนาน → ถอดเสียงเป็นชุด → สรุป
 
@@ -799,8 +916,11 @@ def run_batch(args, say):
     if args.parallel_ffmpeg < 1:
         raise ThaisttError("--parallel-ffmpeg ต้อง ≥ 1 (ได้ %d)" % args.parallel_ffmpeg)
 
-    prompt = _resolve_prompt(args)
-    sources = _expand_batch_inputs(args.media)
+    prompt = _resolve_prompt(args, say)
+    media_args = list(args.media)
+    if args.files_from:
+        media_args.extend(_parse_files_from(args.files_from))
+    sources = _expand_batch_inputs(media_args)
     if not sources:
         raise ThaisttError("ไม่พบไฟล์สื่อที่ใช้ได้ในที่ที่ให้มา (ตรวจนามสกุลไฟล์)")
 
@@ -823,14 +943,14 @@ def run_batch(args, say):
     except OSError as exc:
         raise ThaisttError("สร้างโฟลเดอร์ปลายทางไม่ได้: %s" % exc)
 
-    # รายการงาน + resume (มีผลลัพธ์แล้ว = ข้าม) + ชื่อ stem ชนกัน
+    # รายการงาน + resume (มีผลลัพธ์แล้ว = ข้าม ยกเว้น --force) + ชื่อ stem ชนกัน
     items, taken = [], {}
     for pos, src in enumerate(sources):
         stem = os.path.splitext(os.path.basename(src))[0]
         out_path = os.path.join(out_dir, stem + ".txt")
-        if os.path.exists(out_path):
+        if os.path.exists(out_path) and not args.force:
             items.append(_BatchItem(src, stem, out_path, pos,
-                                    status="skip", note="มีผลลัพธ์แล้ว (resume)"))
+                                    status="skip", note="มีผลลัพธ์แล้ว (resume — ใช้ --force ถอดใหม่)"))
         elif stem in taken:
             items.append(_BatchItem(src, stem, out_path, pos,
                                     status="skip",
@@ -897,7 +1017,7 @@ def run_batch(args, say):
                         try:
                             _run_whisper(whisper_bin, model, it.wav, args.lang,
                                          it.wav + ".txt", "txt", args.threads,
-                                         prompt, None, say)
+                                         prompt, None, say, json_out=True)
                         except ThaisttError as exc:
                             it.status, it.note = "fail", str(exc)
                 for it in ready:
@@ -907,6 +1027,9 @@ def run_batch(args, say):
                     if os.path.isfile(raw):
                         it.text = _read_text(raw).strip()
                         it.status = "ok" if it.text else "empty"
+                        conf = _confidence_from_json(it.wav + ".json")
+                        if conf:
+                            it.avg_p, it.low_conf_pct = conf
                     else:
                         it.status, it.note = "fail", "whisper ไม่ได้ผลลัพธ์"
             state["processed"] += len(group)
@@ -918,7 +1041,8 @@ def run_batch(args, say):
         if it.status in ("ok", "empty"):
             _write_text(it.out_path, it.text + "\n" if it.text else "")
 
-    say("progress: 100%% เสร็จ — ผลอยู่ที่ %s" % out_dir)
+    _write_manifest(items, out_dir)
+    say("progress: 100%% เสร็จ — ผลอยู่ที่ %s (สรุปรายคลิป: %s)" % (out_dir, MANIFEST_NAME))
     fail_count = _batch_summary(items)
     return 2 if fail_count else 0
 
@@ -945,8 +1069,10 @@ def main(argv=None):
         say = lambda _msg: None
     else:
         say = lambda msg: print(msg, file=sys.stderr, flush=True)
-    batch_mode = len(args.media) > 1 or any(
-        os.path.isdir(os.path.expanduser(p)) for p in args.media
+    batch_mode = (
+        len(args.media) > 1
+        or bool(args.files_from)
+        or any(os.path.isdir(os.path.expanduser(p)) for p in args.media)
     )
     try:
         return run_batch(args, say) if batch_mode else run_pipeline(args, say)
