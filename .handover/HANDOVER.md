@@ -5,8 +5,20 @@
 
 ## สถานะปัจจุบัน
 
-- **v0.1 เสร็จ (Phase S0 ครบ acceptance)** — commit `06b3715` (2026-11-01)
-  โดย thaistt session ตามสเปก `../THub Studio/docs/spec-vox-whisper.md` → "Phase S0"
+- **v0.2 เสร็จ — โหมด batch รายคลิป** (commit `64b7deb` · CI เขียวครบ matrix
+  รอบเดียว) โดย thaistt session · **v0.1 เสร็จก่อนหน้า (Phase S0 ครบ acceptance —
+  commit `06b3715`)**
+- v0.2 ทำตามสเปกหัวข้อ "v0.2" + ข้อเสนอแนะจาก ThaiW1Setup (ด้านล่าง) ครบ:
+  multi `-f` รอบเดียวต่อชุด (default 250) · แปลง ffmpeg ขนาน (default 8) ·
+  `<stem>.txt` รายคลิป · resume ข้ามของเดิม · ทนคลิปพัง (ชุดพัง → ซ้ำรายไฟล์
+  แยกคลิปพิษ) · สรุป stderr เสมอแม้ --quiet · ติดป้ายคลิปน่าสงสัย (สั้น <1s /
+  วลีหลอน) · `--prompt-file` · ค้น `~/.local/share/whisper-models` เป็นค่าปริยาย
+- **ยืนยันกับของจริง**: W1 voices `.ogg` 20 คลิป บน large-v3-turbo (-t 8) = **9.6 วิ
+  สำเร็จ 20 พัง 0** + จับคลิปสั้นน่าสงสัยจริง 3 ตัว ("Right."/"Dandelion"/"Thanks."
+  0.7–0.9s) + resume ข้ามครบ — แทนสคริปต์ xargs+run.sh ของ W1 ได้ทันที ·
+  fixture เทสจริง: jfk+sine+resume และ W1 5 คลิป (skip explicit ตามสเปก)
+- เทสรวม **81 ตัว** (CI สภาพไม่มี whisper: 78 ผ่าน + fixture skip) · fake binaries
+  อัปเกรดเป็น WAV header จริง + multi-input + พังรายไฟล์
 - CLI ครบ contract: `thaistt <media> -l <lang|auto> -o <draft.srt> [--whisper/--model/
   --ffmpeg/--format srt|txt/--max-chars 42/--max-dur 7/--min-gap 0.8/--range/--prompt/
   -t/--quiet]` · exit 0/2 · stderr ไทย + `progress: NN%` · ไม่แตะต้นฉบับ · temp
@@ -32,15 +44,15 @@
 
 ## งานถัดไป
 
-- **v0.2 batch รายคลิป** (จาก use case ThaiW1Setup/ThaiW2Setup): รับโฟลเดอร์/หลายไฟล์
-  `--format txt` → แปลง ffmpeg ขนาน → เรียก whisper-cli รอบเดียวต่อชุด (default 250)
-  reuse การโหลดโมเดล ~8s · ทนคลิปพังบางส่วน — ตามสเปกหัวข้อ "v0.2"
-  **โดยใช้ "ข้อเสนอแนะจาก ThaiW1Setup" ด้านล่างเป็นความต้องการจริง** (v0.2 ต้องดีพอ
-  ทดแทนสคริปต์ชั่วคราวของ W1 ได้จริง — batch `-f` หลายไฟล์ต่อคำสั่งเดียว · ผลออก
-  `<ไฟล์>.wav.txt` · ติดป้ายคลิปน่าสงสัย · `--prompt-file` ชื่อเฉพาะ)
-- ผู้บริโภค: **TVox ใน THub-Launcher** (Phase S2 — Settings `stt_cli_path` + ปุ่มถอดเสียง
-  + dialog parse `progress: NN%`) · ผ่านสะพาน: SRT ร่าง → Game Tool "Subtitles" ของ
-  TFormat-Plugins (Phase S1) → CSV กลาง → pipeline แปลไทยเต็มสาย
+- ~~v0.2 batch รายคลิป~~ **เสร็จแล้ว** (ดูสถานะปัจจุบัน) — ที่เหลือจากข้อเสนอแนะ W1:
+  VAD (`--vad` + silero) และเกณฑ์ no-speech ที่แม่นกว่า (ตอนนี้ใช้ heuristic
+  สั้น/วลีหลอน), ถอดภาษาไทย (โมเดล large-v3 เต็ม / Thonburian ต้องแปลง ggml —
+  เอกสารวิธีแปลง), การเทียบเสียง-ข้อความระดับคำ (อยู่กับโปรเจกต์เกมตามสเปก)
+- **ก้าวถัดไปที่แท้จริงคือ S1/S2**: TFP "Subtitles" tool + TVox ใน THub-Launcher
+  (Settings `stt_cli_path` + ปุ่มถอดเสียง + dialog parse `progress: NN%`) ·
+  ผ่านสะพาน: SRT ร่าง → CSV กลาง → pipeline แปลไทยเต็มสาย · เมื่อ W1 ตรวจงาน
+  ต่อ ย้ายมาเรียก `thaistt <voices> -l en --format txt -o <out> --prompt-file …`
+  แทนสคริปต์ชั่วคราว (18,000 คลิปที่เหลือ ≈ ชุดละ 250)
 
 ## ข้อเสนอแนะจาก ThaiW1Setup → ความต้องการจริงของ v0.2 (2026-11-01 — ผู้ใช้สั่งให้บันทึก)
 
