@@ -35,11 +35,18 @@
 - **v0.2 batch รายคลิป** (จาก use case ThaiW1Setup/ThaiW2Setup): รับโฟลเดอร์/หลายไฟล์
   `--format txt` → แปลง ffmpeg ขนาน → เรียก whisper-cli รอบเดียวต่อชุด (default 250)
   reuse การโหลดโมเดล ~8s · ทนคลิปพังบางส่วน — ตามสเปกหัวข้อ "v0.2"
+  **โดยใช้ "ข้อเสนอแนะจาก ThaiW1Setup" ด้านล่างเป็นความต้องการจริง** (v0.2 ต้องดีพอ
+  ทดแทนสคริปต์ชั่วคราวของ W1 ได้จริง — batch `-f` หลายไฟล์ต่อคำสั่งเดียว · ผลออก
+  `<ไฟล์>.wav.txt` · ติดป้ายคลิปน่าสงสัย · `--prompt-file` ชื่อเฉพาะ)
 - ผู้บริโภค: **TVox ใน THub-Launcher** (Phase S2 — Settings `stt_cli_path` + ปุ่มถอดเสียง
   + dialog parse `progress: NN%`) · ผ่านสะพาน: SRT ร่าง → Game Tool "Subtitles" ของ
   TFormat-Plugins (Phase S1) → CSV กลาง → pipeline แปลไทยเต็มสาย
 
-## ข้อเสนอจากงานจริง ThaiW1Setup (2026-11-01 — ผู้ใช้สั่งให้บันทึก)
+## ข้อเสนอแนะจาก ThaiW1Setup → ความต้องการจริงของ v0.2 (2026-11-01 — ผู้ใช้สั่งให้บันทึก)
+
+**เป้าหมายของส่วนนี้: ให้ thaistt v0.2 ทดแทนสคริปต์ชั่วคราวของ ThaiW1Setup**
+(xargs + run.sh + compare.py ที่เรียก whisper.cpp ตรง ๆ) — คือความต้องการจากงานจริง
+ที่นำมากำหนด scope ของ v0.2 ไม่ใช่บันทึกไว้อ่านอ้างอิง
 
 ThaiW1Setup ใช้ whisper.cpp (ไม่ผ่าน thaistt) ตรวจซับเทียบเสียงพากย์อังกฤษ W1 — สคริปต์ชั่วคราว + วิธีใช้อยู่ที่
 `../ThaiW1Setup/docs/whisper.md` และ `../ThaiW1Setup/build/translate/whisper/compare.py`
