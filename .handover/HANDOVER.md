@@ -22,9 +22,13 @@
   ด้วย fake binaries (`tests/fakes/` — CI ไม่ต้องมี whisper) + fixture จริง
   (`tests/test_fixture_real.py` skip explicit ตามสเปกเมื่อเครื่องไม่ครบเครื่องมือ
   — รันจริงด้วย `THAISTT_TEST_MODEL=<ggml>` → jfk.wav + large-v3-turbo ผ่าน)
-- **ยังไม่มี GitHub remote** — CI (ubuntu+windows · py3.9/3.12) ยังไม่เคยรันจริง
-  (คำสั่งเดียวกับ CI ผ่านครบในเครื่องบน python 3.9.6 แล้ว) · รอเจ้าของสั่งสร้าง
-  (AeyXD/thaistt) → push แล้วดู Actions เขียว
+- **ขึ้น GitHub แล้ว: https://github.com/AeyXD/thaistt (public ตามธรรมเนียม ecosystem)**
+  — CI **เขียวครบ matrix** (ubuntu/windows × py3.9/3.12) หลัง push fix `68736d0`
+- บั๊กแรกที่ CI จับได้และแก้แล้ว (commit `68736d0`): Windows console ที่ codepage
+  เดิม (cp1252) ทำให้ `--help`/ข้อความไทยพังด้วย UnicodeEncodeError → เพิ่ม
+  `_force_utf8_streams()` บังคับ stdout/stderr UTF-8 ที่ต้นทาง (ไม่ใช่แก้ CI ปะกัน —
+  ผู้ใช้ Windows จริงก็เจอเหมือนกัน) + regression test รัน `--help` จริงด้วย
+  `PYTHONIOENCODING=cp1252` (แดงก่อนแก้ เขียวหลังแก้ ตรวจด้วย git stash แล้ว)
 
 ## งานถัดไป
 
@@ -34,6 +38,28 @@
 - ผู้บริโภค: **TVox ใน THub-Launcher** (Phase S2 — Settings `stt_cli_path` + ปุ่มถอดเสียง
   + dialog parse `progress: NN%`) · ผ่านสะพาน: SRT ร่าง → Game Tool "Subtitles" ของ
   TFormat-Plugins (Phase S1) → CSV กลาง → pipeline แปลไทยเต็มสาย
+
+## ข้อเสนอจากงานจริง ThaiW1Setup (2026-11-01 — ผู้ใช้สั่งให้บันทึก)
+
+ThaiW1Setup ใช้ whisper.cpp (ไม่ผ่าน thaistt) ตรวจซับเทียบเสียงพากย์อังกฤษ W1 — สคริปต์ชั่วคราว + วิธีใช้อยู่ที่
+`../ThaiW1Setup/docs/whisper.md` และ `../ThaiW1Setup/build/translate/whisper/compare.py`
+
+1. **batch รายคลิป = จำเป็นจริง (ยืนยันตัวเลขให้ v0.2)** — W1 มีเสียงพากย์ 20,839 คลิป (16.9 ชม.) / โหลดโมเดล ~8 วินาที
+   ต่อครั้ง → เรียกทีละไฟล์ทั้งเกม ≈ 46 ชม. เสียเปล่า / ส่ง `-f a.wav -f b.wav …` ชุดละ 250 ไฟล์ในคำสั่งเดียว:
+   2,474 คลิป (2.1 ชม.) ใช้ 19 นาทีบน Apple M5 (large-v3-turbo, `-t 8`) — ผลลัพธ์ `-otxt` ออก `<ไฟล์>.wav.txt` ข้างไฟล์
+2. **คลิปสั้น/เสียงร้องได้ข้อความหลอน** — เช่น "Thank you." "*Gunshot*" บนเสียงสั้นหรือเสียงคำราม (W1: 18/621 บรรทัด
+   ที่ตรวจเป็นกรณี Whisper ถอดผิด) → เสนอ: เปิด VAD ของ whisper.cpp (`--vad` + โมเดล silero) หรือเกณฑ์ no-speech
+   และ**ติดป้ายคลิปที่น่าสงสัย**ในผลลัพธ์ (เช่น คลิป < 1 วินาที / ข้อความเป็นวลีหลอนที่พบบ่อย) ให้คนตรวจรู้
+3. **`--prompt` ชื่อเฉพาะได้ผลจริง** — W1 ถอด "Eskel" เป็น "Pascal", "Barghest" เป็น "bar guest", ภาษาเอลฟ์เพี้ยนหมด →
+   เสนอรับไฟล์รายชื่อ (เช่น `--prompt-file` จากตารางชื่อของโปรเจกต์เกม) แทนพิมพ์ยาวในบรรทัดคำสั่ง
+4. **โมเดลที่ติดตั้งในเครื่องแล้ว**: `~/.local/share/whisper-models/ggml-large-v3-turbo.bin` (1.6 GB, sha1
+   `4af2b29d7ec73d781377bfd1758ca957a807e941`) — ตั้ง `THAISTT_MODEL` ชี้ที่นี่ / อาจให้ thaistt ค้นตำแหน่งนี้เป็นค่าปริยาย
+5. **ถอดเสียงภาษาไทย**: turbo แม่นไทยน้อยกว่า large-v3 เต็ม (~3 GB) / มีโมเดลที่ฝึกเพิ่มสำหรับไทย (เช่น Thonburian
+   Whisper) แต่ต้องแปลงเป็น ggml ก่อนใช้กับ whisper.cpp — ถ้าจะรองรับ ควรระบุในเอกสารวิธีแปลง/ทดสอบ
+6. **ThaiW1Setup = กรณีทดสอบขนาดใหญ่** — เมื่อ v0.2 batch เสร็จ งานตรวจเสียงพากย์ W1 ที่เหลือ (องก์ 2 ถึงบทส่งท้าย
+   ~18,000 คลิป) ย้ายมาเรียก thaistt แทนสคริปต์ชั่วคราวได้ (ไฟล์เสียงแตกไว้ที่ `../ThaiW1Setup/work/voices/*.ogg`)
+   — ผลที่พบจากนำร่อง: เสียงพากย์ EE ต่างจากข้อความในไฟล์เกม 52% → การเทียบควรให้คะแนนความคล้ายระดับคำ
+   แล้วให้คน/AI ตัดสินความหมาย ไม่ฟ้องจากคะแนนอย่างเดียว
 
 ## บทบาทในภาพรวม
 
