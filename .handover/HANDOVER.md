@@ -168,6 +168,15 @@ ThaiW1Setup ใช้ whisper.cpp (ไม่ผ่าน thaistt) ตรวจ�
   ภาษาต่ำ (whisper.cpp ตรวจภาษาได้) → ติดป้ายบรรทัดภาษาเอลฟ์ / เสียงร้อง / คาถาอัตโนมัติ (W1: "Aen'drean, va, Saov Leo, tuv'le"
   ถอดเป็น "Endrian war sauvle o törvle") — ใช้คู่กับข้อ 3 / W2 มีภาษาเอลฟ์เหมือนกัน
 
+### บั๊กจากการใช้จริง ThaiW1Setup (2026-11-01)
+
+- **`--files-from` ใช้อย่างเดียวไม่ได้** — positional `media` เป็น `nargs="+"` (บรรทัด ~752) จึงบังคับต้องมีไฟล์อย่างน้อย 1 ตัว:
+  `thaistt --files-from list.txt -o out ...` → "the following arguments are required: media|folder" (exit 2 ไม่ถอดอะไรเลย)
+  — W1 เลี่ยงชั่วคราวโดยใส่บรรทัดแรกของรายการเป็น positional ด้วย / เสนอ: `nargs="*"` แล้วตรวจเองว่ามี media หรือ files-from
+  อย่างน้อยหนึ่งอย่าง + เทสกรณี files-from ล้วน (เทสปัจจุบัน test_batch.py ~514 ส่ง positional คู่เสมอ จึงไม่จับ)
+- **manifest ถูกเขียนทับทุกรอบ** — ถ้าแบ่งถอดหลายรอบลง outdir เดียว ค่าความมั่นใจของรอบก่อนหาย (คลิปเดิมกลายเป็น skip)
+  → เสนอ: เขียนต่อท้าย/รวมตาม id (คงค่าเดิมของคลิปที่ skip) หรือ `--manifest <path>` / W1 ตอนนี้คัดลอกเก็บแยกต่อรอบ
+
 ## บทบาทในภาพรวม
 
 ผู้บริโภคหลัก: **TVox ใน THub-Launcher** (Phase S2 — Settings `stt_cli_path` + ปุ่มถอดเสียง) ·

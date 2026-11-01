@@ -268,6 +268,21 @@ class TestBatchCliContract(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("--detect-lang ใช้กับโหมด batch", buf.getvalue())
 
+    def test_multi_lang_rejected_in_single_mode(self):
+        env = dict(CLEAN_ENV)
+        argv = [self.m1, "-l", "en,pl", "-o", os.path.join(self.tmp, "o.srt")]
+        buf = io.StringIO()
+        with mock.patch.dict(os.environ, env, clear=True), redirect_stderr(buf):
+            code = thaistt.main(argv)
+        self.assertEqual(code, 2)
+        self.assertIn("หลายภาษา", buf.getvalue())
+
+    def test_multi_lang_auto_or_duplicate_rejected(self):
+        for bad in ("en,auto", "en,en", "en,,pl,pl"):
+            code, err = self.run_main(["--format", "txt", "-l", bad])
+            self.assertEqual(code, 2, "คาด exit 2 สำหรับ -l %s" % bad)
+        self.assertIn("auto", self.run_main(["--format", "txt", "-l", "en,auto"])[1])
+
     def test_files_from_missing_file(self):
         code, err = self.run_main(
             ["--format", "txt",
@@ -374,7 +389,7 @@ class TestBatchWithFakes(unittest.TestCase):
         wh_before = len(self.lines(self.log_wh))
         code2, err2 = self.run_batch(self.media[:2])
         self.assertEqual(code2, 0)
-        self.assertIn("ข้ามของเดิม 2", err2)
+        self.assertIn("ข้ามผลเดิม 2", err2)
         self.assertIn("ข้าม 2", err2)
         # ไม่เรียก external binary เพิ่ม
         self.assertEqual(len(self.lines(self.log_ff)), ff_before)
@@ -457,8 +472,8 @@ class TestBatchWithFakes(unittest.TestCase):
 
     # ---------------- v0.3: manifest / confidence / --force / --files-from ----
 
-    def read_manifest(self):
-        path = os.path.join(self.outdir, thaistt.MANIFEST_NAME)
+    def read_manifest(self, subdir=""):
+        path = os.path.join(self.outdir, subdir, thaistt.MANIFEST_NAME)
         with open(path, "r", encoding="utf-8-sig", newline="") as fh:
             return list(csv.DictReader(fh))
 
@@ -501,7 +516,7 @@ class TestBatchWithFakes(unittest.TestCase):
         wh_before = len(self.lines(self.log_wh))
         code2, err2 = self.run_batch(self.media[:2], ["--force"])
         self.assertEqual(code2, 0, err2)
-        self.assertIn("ข้ามของเดิม 0", err2)
+        self.assertIn("ข้ามผลเดิม 0", err2)
         self.assertGreater(len(self.lines(self.log_wh)), wh_before,
                            "--force ต้องเรียก whisper ใหม่")
         rows = self.read_manifest()
@@ -548,6 +563,37 @@ class TestBatchWithFakes(unittest.TestCase):
         row = self.read_manifest()[0]
         self.assertEqual(row["lang"], "")
         self.assertEqual(row["lang_mismatch"], "")
+
+    # ---------------- v0.5: หลายภาษาในคำสั่งเดียว (ข้อ 7 ของ W2) ----------------
+
+    def test_multi_lang_one_conversion_shared_outputs_split(self):
+        code, err = self.run_batch(self.media[:2], ["-l", "en,pl"])
+        self.assertEqual(code, 0, err)
+        self.assertIn("× 2 ภาษา [en,pl]", err)
+        for lang in ("en", "pl"):
+            for stem in ("m1", "m2"):
+                path = os.path.join(self.outdir, lang, stem + ".txt")
+                with open(path, encoding="utf-8") as fh:
+                    self.assertEqual(fh.read(), "Hello there friend.\n")
+            self.assertEqual({r["id"] for r in self.read_manifest(lang)}, {"m1", "m2"})
+        # หัวใจข้อ 7: แปลง WAV ครั้งเดียวแชร์ทุกภาษา (ffmpeg 2 ครั้ง ไม่ใช่ 4)
+        ff = self.lines(self.log_ff)
+        self.assertEqual(ff.count("-i"), 2)
+        # whisper รอบเดียวต่อ (กลุ่ม×ภาษา) = 2 รอบ ภาษาถูกส่งเป็นรายตัว
+        runs = self.whisper_runs()
+        self.assertEqual(len(runs), 2)
+        sent_langs = {argv[argv.index("-l") + 1] for argv in runs}
+        self.assertEqual(sent_langs, {"en", "pl"})
+
+    def test_multi_lang_resume_skips_all(self):
+        self.run_batch(self.media[:2], ["-l", "en,pl"])
+        ff_before = len(self.lines(self.log_ff))
+        wh_before = len(self.lines(self.log_wh))
+        code, err = self.run_batch(self.media[:2], ["-l", "en,pl"])
+        self.assertEqual(code, 0, err)
+        self.assertIn("ข้ามผลเดิม 4", err)
+        self.assertEqual(len(self.lines(self.log_ff)), ff_before)
+        self.assertEqual(len(self.lines(self.log_wh)), wh_before)
 
 
 if __name__ == "__main__":

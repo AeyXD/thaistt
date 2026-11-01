@@ -46,7 +46,7 @@ import threading
 import wave
 
 APP = "thaistt"
-VERSION = "0.4.0"
+VERSION = "0.5.0"
 
 ENV_WHISPER = "THAISTT_WHISPER"
 ENV_MODEL = "THAISTT_MODEL"
@@ -667,6 +667,9 @@ def run_pipeline(args, say):
         raise ThaisttError("--force ใช้กับโหมด batch เท่านั้น (โหมดไฟล์เดียวเขียนทับ output อยู่แล้ว)")
     if args.detect_lang:
         raise ThaisttError("--detect-lang ใช้กับโหมด batch เท่านั้น (ผลอยู่ใน manifest ของ batch)")
+    if "," in args.lang:
+        raise ThaisttError("-l หลายภาษา (คั่นด้วยลูกน้ำ) ใช้กับโหมด batch เท่านั้น "
+                           "— โหมดไฟล์เดียวถอดครั้งละภาษา")
     media = os.path.abspath(os.path.expanduser(args.media[0]))
     if not os.path.isfile(media):
         raise ThaisttError("ไม่พบไฟล์สื่อ: %s" % media)
@@ -754,7 +757,8 @@ def build_parser():
              "หลายตัวหรือโฟลเดอร์ = โหมด batch (txt รายคลิป)")
     parser.add_argument(
         "-l", "--lang", dest="lang", default="auto", metavar="lang",
-        help="ภาษาพูด เช่น en/ja/zh หรือ auto (default: %(default)s)")
+        help="ภาษาพูด เช่น en/ja/zh หรือ auto · batch ให้หลายภาษาคั่นลูกน้ำได้ "
+             "เช่น -l en,pl (แยกโฟลเดอร์ผลต่อภาษา) (default: %(default)s)")
     parser.add_argument(
         "-o", "--output", dest="output", required=True, metavar="draft.srt|outdir",
         help="ไฟล์ปลายทาง (ไฟล์เดียว) หรือโฟลเดอร์ปลายทาง (batch) — ไม่แตะไฟล์ต้นฉบับ")
@@ -963,6 +967,8 @@ def _write_manifest(items, out_dir, requested_lang=""):
 def run_batch(args, say):
     """batch: ขยายรายการ → resume ข้ามของเดิม → แปลงขนาน → ถอดเสียงเป็นชุด → สรุป
 
+    รองรับหลายภาษาในคำสั่งเดียว (ข้อ 7 ของ W2): `-l en,pl` — แปลง WAV ครั้งเดียว
+    แชร์ทุกภาษา · ผลแยกโฟลเดอร์ `<outdir>/<lang>/` + manifest ต่อภาษา
     exit 0 = งานครบ (มี 'ว่าง' ได้ — รายงานในสรุป) · มีคลิป 'พัง' หรือพังระดับงาน = 2
     """
     if args.format != "txt":
@@ -975,6 +981,14 @@ def run_batch(args, say):
         raise ThaisttError("--batch-size ต้อง ≥ 1 (ได้ %d)" % args.batch_size)
     if args.parallel_ffmpeg < 1:
         raise ThaisttError("--parallel-ffmpeg ต้อง ≥ 1 (ได้ %d)" % args.parallel_ffmpeg)
+
+    langs = [lang.strip() for lang in args.lang.split(",") if lang.strip()]
+    if len(set(langs)) != len(langs):
+        raise ThaisttError("-l มีภาษาซ้ำ: %s" % args.lang)
+    if len(langs) > 1 and "auto" in langs:
+        raise ThaisttError(
+            "-l หลายภาษาใช้ 'auto' รวมกันไม่ได้ — ระบุเป็นรายตัว เช่น -l en,pl")
+    multi_lang = len(langs) > 1
 
     prompt = _resolve_prompt(args, say)
     media_args = list(args.media)
@@ -998,33 +1012,58 @@ def run_batch(args, say):
     )
     model = _resolve_model(args.model, os.environ.get(ENV_MODEL))
 
+    # โฟลเดอร์ปลายทางต่อภาษา: ภาษาเดียว = outdir เดิม (คงเดิมกับ W1) ·
+    # หลายภาษา = outdir/<lang>/
+    def lang_dir_of(lang):
+        return out_dir if not multi_lang else os.path.join(out_dir, lang)
+
     try:
-        os.makedirs(out_dir, exist_ok=True)
+        for lang in langs:
+            os.makedirs(lang_dir_of(lang), exist_ok=True)
     except OSError as exc:
         raise ThaisttError("สร้างโฟลเดอร์ปลายทางไม่ได้: %s" % exc)
 
-    # รายการงาน + resume (มีผลลัพธ์แล้ว = ข้าม ยกเว้น --force) + ชื่อ stem ชนกัน
-    items, taken = [], {}
-    for pos, src in enumerate(sources):
-        stem = os.path.splitext(os.path.basename(src))[0]
-        out_path = os.path.join(out_dir, stem + ".txt")
-        if os.path.exists(out_path) and not args.force:
-            items.append(_BatchItem(src, stem, out_path, pos,
-                                    status="skip", note="มีผลลัพธ์แล้ว (resume — ใช้ --force ถอดใหม่)"))
-        elif stem in taken:
-            items.append(_BatchItem(src, stem, out_path, pos,
-                                    status="skip",
-                                    note="ชื่อชนกับ %s — ใช้ของไฟล์แรก" % os.path.basename(taken[stem])))
+    stems = [os.path.splitext(os.path.basename(src))[0] for src in sources]
+
+    # ชื่อ stem ชนกันเช็คครั้งเดียว (ผลเหมือนกันทุกภาษา)
+    taken, collision_note = {}, {}
+    for pos, stem in enumerate(stems):
+        if stem in taken:
+            collision_note[pos] = "ชื่อชนกับ %s — ใช้ของไฟล์แรก" % os.path.basename(taken[stem])
         else:
-            taken[stem] = src
-            items.append(_BatchItem(src, stem, out_path, pos))
-    todo = [it for it in items if not it.status]
-    total = len(todo)
-    groups = [todo[i:i + args.batch_size] for i in range(0, total, args.batch_size)]
-    say("progress: 5%% เริ่ม batch %d ไฟล์ (ข้ามของเดิม %d) — %d กลุ่ม × สูงสุด %d "
+            taken[stem] = sources[pos]
+
+    # รายการงานต่อภาษา (resume แยกตาม out_path ของภาษานั้น)
+    items_by_lang = {}
+    for lang in langs:
+        lang_dir = lang_dir_of(lang)
+        lst = []
+        for pos, src in enumerate(sources):
+            out_path = os.path.join(lang_dir, stems[pos] + ".txt")
+            if pos in collision_note:
+                lst.append(_BatchItem(src, stems[pos], out_path, pos,
+                                      status="skip", note=collision_note[pos]))
+            elif os.path.exists(out_path) and not args.force:
+                lst.append(_BatchItem(src, stems[pos], out_path, pos,
+                                      status="skip",
+                                      note="มีผลลัพธ์แล้ว (resume — ใช้ --force ถอดใหม่)"))
+            else:
+                lst.append(_BatchItem(src, stems[pos], out_path, pos))
+        items_by_lang[lang] = lst
+
+    # กลุ่มตามตำแหน่งไฟล์ต้นทาง — แปลง WAV ครั้งเดียวแล้วใช้ร่วมทุกภาษา
+    pending = [
+        pos for pos in range(len(sources))
+        if any(not items_by_lang[lang][pos].status for lang in langs)
+    ]
+    total = len(pending)
+    groups = [pending[i:i + args.batch_size] for i in range(0, total, args.batch_size)]
+    skipped = sum(1 for lang in langs for it in items_by_lang[lang] if it.status == "skip")
+    say("progress: 5%% เริ่ม batch %d ไฟล์%s (ข้ามผลเดิม %d) — %d กลุ่ม × สูงสุด %d "
         "ไฟล์/กลุ่ม · ffmpeg ขนาน %d…"
-        % (len(items), len(items) - total, len(groups), args.batch_size,
-           args.parallel_ffmpeg))
+        % (len(sources),
+           " × %d ภาษา [%s]" % (len(langs), ",".join(langs)) if multi_lang else "",
+           skipped, len(groups), args.batch_size, args.parallel_ffmpeg))
 
     state = {"last_pct": 4, "converted": 0, "processed": 0}
 
@@ -1037,45 +1076,58 @@ def run_batch(args, say):
 
     # ทำทีละกลุ่ม: temp ถูกจำกัดขนาดต่อกลุ่มแทนการแปลงทั้งหมดก่อน —
     # สำคัญกับชุดใหญ่ (W1 ~18,000 คลิป จะไม่มี WAV กองหลาย GB ใน temp)
-    for seq, group in enumerate(groups, 1):
+    for seq, positions in enumerate(groups, 1):
         with tempfile.TemporaryDirectory(prefix="thaistt-batch-") as tmpdir:
             wavs_dir = os.path.join(tmpdir, "wavs")
             os.makedirs(wavs_dir, exist_ok=True)
 
             lock = threading.Lock()
-            converted_here = {"ok": 0, "fail": 0}
+            wav_by_pos = {}
+            conv_fail = {}
 
-            def convert(it):
-                wav_path = os.path.join(wavs_dir, "%06d__%s.wav" % (it.idx, it.stem))
-                ok, err = _run_ffmpeg_one(ffmpeg_bin, it.src, wav_path)
+            def convert(pos):
+                wav_path = os.path.join(wavs_dir, "%06d__%s.wav" % (pos, stems[pos]))
+                ok, err = _run_ffmpeg_one(ffmpeg_bin, sources[pos], wav_path)
                 with lock:
                     if ok:
-                        it.wav = wav_path
-                        it.duration = _read_wav_duration_seconds(wav_path)
-                        converted_here["ok"] += 1
+                        wav_by_pos[pos] = (wav_path, _read_wav_duration_seconds(wav_path))
                     else:
-                        it.status, it.note = "fail", "ffmpeg %s" % err
-                        converted_here["fail"] += 1
+                        conv_fail[pos] = err
                     state["converted"] += 1
                     say_pct(5 + 55 * state["converted"] // max(1, total),
                             "แปลงเสียง %d/%d… (กลุ่ม %d/%d)"
                             % (state["converted"], total, seq, len(groups)))
 
-            if group:
+            if positions:
                 with concurrent.futures.ThreadPoolExecutor(
-                        max_workers=min(args.parallel_ffmpeg, len(group))) as pool:
-                    list(pool.map(convert, group))
+                        max_workers=min(args.parallel_ffmpeg, len(positions))) as pool:
+                    list(pool.map(convert, positions))
 
-            ready = [it for it in group if not it.status]
-            if ready:
+            # กระจายผลแปลง (แชร์ทุกภาษา) — พังครั้งเดียว = พังทุกภาษา
+            for lang in langs:
+                for pos in positions:
+                    it = items_by_lang[lang][pos]
+                    if it.status:
+                        continue
+                    if pos in conv_fail:
+                        it.status, it.note = "fail", "ffmpeg %s" % conv_fail[pos]
+                    else:
+                        it.wav, it.duration = wav_by_pos[pos]
+
+            # ถอดเสียงต่อภาษา (รอบเดียวต่อกลุ่ม×ภาษา)
+            for lang in langs:
+                ready = [items_by_lang[lang][pos] for pos in positions
+                         if not items_by_lang[lang][pos].status]
+                if not ready:
+                    continue
                 wavs = [it.wav for it in ready]
                 _ok, done = _run_whisper_multi(
-                    whisper_bin, model, wavs, args.lang, args.threads, prompt,
+                    whisper_bin, model, wavs, lang, args.threads, prompt,
                     wavs_dir)
                 for it in ready:  # คลิปที่ชุดใหญ่ไม่ได้ผล → เรียกรายไฟล์แยกคลิปพิษ
                     if not done.get(it.wav):
                         try:
-                            _run_whisper(whisper_bin, model, it.wav, args.lang,
+                            _run_whisper(whisper_bin, model, it.wav, lang,
                                          it.wav + ".txt", "txt", args.threads,
                                          prompt, None, say, json_out=True)
                         except ThaisttError as exc:
@@ -1092,10 +1144,14 @@ def run_batch(args, say):
                             it.avg_p, it.low_conf_pct = conf
                     else:
                         it.status, it.note = "fail", "whisper ไม่ได้ผลลัพธ์"
-            # รอบตรวจภาษา (ข้อ 9 ของ W1/W2): แยกจากรอบถอด — จับคลิปภาษาเอลฟ์/
-            # เสียงร้อง/คาถา ที่ไม่ใช่ภาษาที่สั่ง ใส่ manifest เป็น lang/lang_p
+
+            # รอบตรวจภาษา (ข้อ 9 ของ W1/W2): ทำครั้งเดียวต่อกลุ่ม แชร์ทุกภาษา —
+            # จับคลิปภาษาเอลฟ์/เสียงร้อง/คาถา ที่ไม่ใช่ภาษาที่สั่ง ใส่ manifest เป็น lang/lang_p
             if args.detect_lang:
-                detectable = [it.wav for it in group if it.status in ("ok", "empty")]
+                detectable = sorted({
+                    it.wav for lang in langs for it in items_by_lang[lang]
+                    if it.status in ("ok", "empty") and it.wav
+                })
                 if detectable:
                     detected = _run_whisper_detect(
                         whisper_bin, model, detectable, wavs_dir)
@@ -1103,23 +1159,28 @@ def run_batch(args, say):
                         state["warned_no_detect"] = True
                         say("คำเตือน: build ของ whisper.cpp นี้ไม่มี -dl "
                             "(--detect-language) — ข้ามการตรวจภาษา")
-                    for it in group:
-                        if it.wav in (detected or {}):
-                            it.lang, it.lang_p = detected[it.wav]
-            state["processed"] += len(group)
+                    for lang in langs:
+                        for it in items_by_lang[lang]:
+                            if it.wav in (detected or {}):
+                                it.lang, it.lang_p = detected[it.wav]
+            state["processed"] += len(positions)
             say_pct(60 + 35 * state["processed"] // max(1, total),
                     "ถอดเสียงกลุ่ม %d/%d เสร็จ%s…"
                     % (seq, len(groups),
                        " (พร้อมตรวจภาษา)" if args.detect_lang else ""))
 
     # เขียนผลลัพธ์นอก temp — ok/empty เขียนไฟล์เสมอ (ว่าง = ไฟล์เปล่า) ให้ resume สม่ำเสมอ
-    for it in items:
-        if it.status in ("ok", "empty"):
-            _write_text(it.out_path, it.text + "\n" if it.text else "")
+    all_items = []
+    for lang in langs:
+        lang_items = items_by_lang[lang]
+        for it in lang_items:
+            if it.status in ("ok", "empty"):
+                _write_text(it.out_path, it.text + "\n" if it.text else "")
+        _write_manifest(lang_items, lang_dir_of(lang), requested_lang=lang)
+        all_items.extend(lang_items)
 
-    _write_manifest(items, out_dir, requested_lang=args.lang)
     say("progress: 100%% เสร็จ — ผลอยู่ที่ %s (สรุปรายคลิป: %s)" % (out_dir, MANIFEST_NAME))
-    fail_count = _batch_summary(items)
+    fail_count = _batch_summary(all_items)
     return 2 if fail_count else 0
 
 

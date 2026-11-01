@@ -211,5 +211,35 @@ class TestBatchReal(unittest.TestCase):
         self.assertEqual(rows["jfk"]["lang_mismatch"], "0")
 
 
+    @unittest.skipUnless(shutil.which("say") and os.path.isfile(JFK_WAV),
+                         "ต้องมี say (macOS) + jfk.wav — ทดสอบหลายภาษาจริง")
+    def test_multi_lang_en_de_real(self):
+        """ข้อ 7 กับของจริง: คลิปเยอรมัน+อังกฤษ สั่ง -l en,de รอบเดียว →
+        ผลแยกโฟลเดอร์ · ภาษาถูกของได้ข้อความ (เยอรมันบังคับ de / อังกฤษบังคับ en)"""
+        aiff = os.path.join(self.tmp, "de.aiff")
+        subprocess.run(
+            ["say", "-v", "Anna", "-o", aiff,
+             "Guten Tag, ich heisse Anna und wohne in Berlin."],
+            check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        de_wav = os.path.join(self.tmp, "de_clip.wav")
+        subprocess.run(
+            [FFMPEG, "-y", "-hide_banner", "-loglevel", "error", "-i", aiff,
+             "-ar", "16000", "-ac", "1", de_wav], check=True)
+        code, err = self._run([de_wav, JFK_WAV], extra=["-l", "en,de"])
+        self.assertEqual(code, 0, err)
+        self.assertIn("× 2 ภาษา", err)
+        with open(os.path.join(self.outdir, "de", "de_clip.txt"),
+                  encoding="utf-8") as fh:
+            self.assertGreater(len(fh.read().strip()), 0,
+                               "คลิปเยอรมันบังคับ de ต้องได้ข้อความ")
+        with open(os.path.join(self.outdir, "en", "jfk.txt"),
+                  encoding="utf-8") as fh:
+            self.assertGreater(len(fh.read().strip()), 0,
+                               "jfk บังคับ en ต้องได้ข้อความ")
+        for lang in ("en", "de"):
+            self.assertTrue(os.path.isfile(
+                os.path.join(self.outdir, lang, thaistt.MANIFEST_NAME)))
+
+
 if __name__ == "__main__":
     unittest.main()
