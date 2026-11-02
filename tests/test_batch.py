@@ -508,12 +508,51 @@ class TestBatchWithFakes(unittest.TestCase):
         self.assertEqual(rows["m1"]["suspicious"], "1")  # วลีหลอน
         self.assertEqual(rows["m2"]["status"], "fail")
 
-    def test_manifest_on_resume_all_skip(self):
+    def test_manifest_on_resume_keeps_previous_rows(self):
+        """บั๊กที่ W1 รายงาน: รอบ resume ต้องไม่ลบค่าความมั่นใจของรอบก่อน"""
         self.run_batch(self.media[:2])
         code, err2 = self.run_batch(self.media[:2])
         self.assertEqual(code, 0)
+        self.assertIn("ข้าม 2", err2)  # สรุปจอยังบอกว่ารอบนี้ข้าม
+        rows = self.read_manifest()
+        self.assertEqual([r["status"] for r in rows], ["ok", "ok"])
+        self.assertEqual([r["avg_p"] for r in rows], ["0.75", "0.75"])
+
+    def test_manifest_accumulates_across_runs(self):
+        """แบ่งถอดหลายรอบลง outdir เดียว → manifest รวมทุกรอบ ไม่เขียนทับ"""
+        self.run_batch(self.media[:2])
+        code, err = self.run_batch(self.media[1:])  # m2 ข้าม · m3 ใหม่
+        self.assertEqual(code, 0, err)
+        rows = {r["id"]: r for r in self.read_manifest()}
+        self.assertEqual(set(rows), {"m1", "m2", "m3"})
+        for stem in ("m1", "m2", "m3"):
+            self.assertEqual(rows[stem]["status"], "ok")
+            self.assertEqual(rows[stem]["avg_p"], "0.75")
+        self.assertEqual([r["id"] for r in self.read_manifest()], ["m1", "m2", "m3"])
+
+    def test_manifest_resume_without_previous_row_writes_skip(self):
+        """มีผล .txt แต่ไม่มีแถวเดิม (เช่น ผลจากก่อนมี manifest) → แถว skip เหมือนเดิม"""
+        self.run_batch(self.media[:2])
+        os.remove(os.path.join(self.outdir, thaistt.MANIFEST_NAME))
+        self.run_batch(self.media[:2])
         rows = self.read_manifest()
         self.assertEqual([r["status"] for r in rows], ["skip", "skip"])
+
+    def test_manifest_merges_old_format_columns(self):
+        """manifest รุ่น v0.3 (ไม่มีคอลัมน์ lang) อ่านรวมได้ คอลัมน์ที่ขาด = ว่าง"""
+        os.makedirs(self.outdir)
+        with open(os.path.join(self.outdir, thaistt.MANIFEST_NAME), "w",
+                  encoding="utf-8-sig", newline="") as fh:
+            writer = csv.writer(fh)
+            writer.writerow(["id", "file", "status", "duration_s", "avg_p",
+                             "low_conf_pct", "suspicious", "text_chars", "note"])
+            writer.writerow(["old", "/x/old.ogg", "ok", "2.00", "0.9", "5", "0", "10", ""])
+        code, err = self.run_batch(self.media[:1] + self.media[1:2])
+        self.assertEqual(code, 0, err)
+        rows = {r["id"]: r for r in self.read_manifest()}
+        self.assertEqual(set(rows), {"old", "m1", "m2"})
+        self.assertEqual(rows["old"]["avg_p"], "0.9")
+        self.assertEqual(rows["old"]["lang"], "")
 
     def test_force_reprocesses_existing(self):
         code1, _ = self.run_batch(self.media[:2])

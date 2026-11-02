@@ -46,7 +46,7 @@ import threading
 import wave
 
 APP = "thaistt"
-VERSION = "0.6.0"
+VERSION = "0.6.1"
 
 ENV_WHISPER = "THAISTT_WHISPER"
 ENV_MODEL = "THAISTT_MODEL"
@@ -909,6 +909,7 @@ class _BatchItem:
     low_conf_pct: object = None  # % ของ token ที่มั่นใจต่ำ (p < 0.5)
     lang: str = ""              # ภาษาที่ตรวจพบ (รอบ --detect-lang — ว่างเมื่อไม่ได้ตรวจ)
     lang_p: object = None       # ความน่าจะเป็นของภาษาที่ตรวจพบ 0..1
+    resumed: bool = False       # ข้ามเพราะมีผลแล้ว — manifest คงแถวเดิมของคลิปนี้
 
 
 def _lang_mismatch_value(item, requested_lang):
@@ -951,6 +952,27 @@ def _batch_summary(items, requested_lang=""):
     return len(groups["fail"])
 
 
+MANIFEST_COLUMNS = ["id", "file", "status", "duration_s", "avg_p", "low_conf_pct",
+                    "lang", "lang_p", "lang_mismatch", "suspicious", "text_chars",
+                    "note"]
+
+
+def _read_manifest_rows(path):
+    """อ่าน manifest เดิม → {id: row} ตามลำดับเดิม — ไม่มี/อ่านไม่ได้คืน {} ไม่พัง
+
+    รับ manifest รุ่นเก่าที่คอลัมน์น้อยกว่าได้ (คอลัมน์ที่ขาด = ว่าง)
+    """
+    rows = {}
+    try:
+        with open(path, "r", encoding="utf-8-sig", newline="") as fh:
+            for row in csv.DictReader(fh):
+                if row.get("id"):
+                    rows[row["id"]] = [row.get(col) or "" for col in MANIFEST_COLUMNS]
+    except (OSError, UnicodeDecodeError, csv.Error):
+        return {}
+    return rows
+
+
 def _write_manifest(items, out_dir, requested_lang=""):
     """สรุปผลรายคลิปแบบเครื่องอ่านได้ (CSV) — ฝั่งเกมไม่ต้องเดาความยาวจากขนาดไฟล์
 
@@ -959,31 +981,37 @@ def _write_manifest(items, out_dir, requested_lang=""):
     low_conf_pct (%token ที่มั่นใจต่ำ p<0.5) · lang/lang_p/lang_mismatch (รอบ
     --detect-lang: ภาษาที่ตรวจพบ + ความน่าจะเป็น + 1 เมื่อคลิปน่าจะไม่ใช่ภาษาที่สั่ง —
     จับภาษาเอลฟ์/เสียงร้อง/คาถา ตามข้อ 9 ของ W1/W2) · suspicious · text_chars · note
+
+    รวมกับ manifest เดิมตาม id (บั๊กที่ W1 รายงาน: แบ่งถอดหลายรอบลง outdir เดียว
+    ค่าความมั่นใจรอบก่อนหาย) — คลิปที่ข้ามเพราะมีผลแล้วคงแถวเดิมไว้ · id ที่ไม่อยู่ใน
+    รอบนี้คงไว้ · คลิปที่ถอดรอบนี้ (รวม --force) เขียนทับแถวของตัวเอง
     """
     path = os.path.join(out_dir, MANIFEST_NAME)
+    rows = _read_manifest_rows(path)
+    for it in items:
+        if it.resumed and it.stem in rows:
+            continue
+        mismatch = _lang_mismatch_value(it, requested_lang)
+        rows[it.stem] = [
+            it.stem,
+            it.src,
+            it.status or "?",
+            "" if it.duration is None else "%.2f" % it.duration,
+            "" if it.avg_p is None else it.avg_p,
+            "" if it.low_conf_pct is None else it.low_conf_pct,
+            it.lang,
+            "" if it.lang_p is None else it.lang_p,
+            mismatch,
+            1 if _is_suspicious(it.duration, it.text, it.avg_p,
+                                 mismatch == 1) else 0,
+            len(it.text),
+            it.note,
+        ]
     try:
         with open(path, "w", encoding="utf-8-sig", newline="") as fh:
             writer = csv.writer(fh)
-            writer.writerow(["id", "file", "status", "duration_s", "avg_p",
-                             "low_conf_pct", "lang", "lang_p", "lang_mismatch",
-                             "suspicious", "text_chars", "note"])
-            for it in items:
-                mismatch = _lang_mismatch_value(it, requested_lang)
-                writer.writerow([
-                    it.stem,
-                    it.src,
-                    it.status or "?",
-                    "" if it.duration is None else "%.2f" % it.duration,
-                    "" if it.avg_p is None else it.avg_p,
-                    "" if it.low_conf_pct is None else it.low_conf_pct,
-                    it.lang,
-                    "" if it.lang_p is None else it.lang_p,
-                    mismatch,
-                    1 if _is_suspicious(it.duration, it.text, it.avg_p,
-                                         mismatch == 1) else 0,
-                    len(it.text),
-                    it.note,
-                ])
+            writer.writerow(MANIFEST_COLUMNS)
+            writer.writerows(rows.values())
     except OSError as exc:
         raise ThaisttError("เขียนไฟล์สรุป %s ไม่ได้: %s" % (path, exc))
 
@@ -1069,7 +1097,7 @@ def run_batch(args, say):
                                       status="skip", note=collision_note[pos]))
             elif os.path.exists(out_path) and not args.force:
                 lst.append(_BatchItem(src, stems[pos], out_path, pos,
-                                      status="skip",
+                                      status="skip", resumed=True,
                                       note="มีผลลัพธ์แล้ว (resume — ใช้ --force ถอดใหม่)"))
             else:
                 lst.append(_BatchItem(src, stems[pos], out_path, pos))
