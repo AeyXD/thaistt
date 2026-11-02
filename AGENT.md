@@ -13,18 +13,19 @@
 
 ```bash
 python3 -m unittest discover -s tests -v        # ทดสอบ — ต้องผ่านก่อนจบทุกครั้ง
-python3 thaistt.py --help                       # CLI (เมื่อ implement แล้ว)
+python3 thaistt.py --help                       # CLI (ไฟล์เดียว → SRT · โฟลเดอร์/หลายไฟล์ → batch)
 ```
 
-- ตัวถ่วงน้ำหนักจริง (whisper.cpp, ffmpeg) เป็น **external binary** — หาผ่าน args หรือ env
+- งานหนักจริง (whisper.cpp, ffmpeg) เป็น **external binary** — หาผ่าน args หรือ env
   `THAISTT_WHISPER` / `THAISTT_MODEL` / `THAISTT_FFMPEG` หรือ PATH
 
 ## โครงสร้าง
 
 | ที่อยู่ | หน้าที่ |
 |---|---|
-| `thaistt.py` | CLI เดียวจบ: ไฟล์เดียว (v0.1) ffmpeg → whisper.cpp → ชั้นจัดจังหวะซับ → SRT/txt · batch รายคลิป (v0.2) multi `-f` รอบเดียวต่อชุด → txt + สรุป |
-| `tests/` | unit (ชั้นจัดจังหวะใช้ SRT ดิบจำลองได้ ไม่ต้องมี whisper) + fixture สื่อจริง |
+| `thaistt.py` | CLI เดียวจบ (`VERSION` ในไฟล์): ไฟล์เดียว ffmpeg → whisper.cpp → ชั้นจัดจังหวะซับ → SRT/txt · batch รายคลิป multi `-f` รอบเดียวต่อกลุ่ม → `<stem>.txt` + manifest CSV (avg_p · lang · suspicious — รวมตาม id ข้ามรอบ) · `--files-from`/`--force`/`--detect-lang`/`-l en,pl` |
+| `install.sh` | symlink คำสั่งสั้น `thaistt` เข้า PATH (whitelist ปลายทาง) |
+| `tests/` | unit (ชั้นจัดจังหวะใช้ SRT ดิบจำลองได้ ไม่ต้องมี whisper) + integration ด้วย `tests/fakes/` (CI ไม่ต้องมี whisper) + fixture สื่อจริง (skip เมื่อเครื่องไม่ครบ) |
 | `NOTICE` | เครดิตส่วนประกอบบุคคลที่สาม — ต้องรักษาไว้ทุกครั้งที่แก้ |
 
 ## กฎเหล็ก
