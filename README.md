@@ -118,6 +118,8 @@ python3 thaistt.py <folder|ไฟล์หลายตัว> -l <lang> --format
 ## การพัฒนา
 
 อ่าน `AGENTS.md` ก่อนแตะโค้ดทุกครั้ง · สถานะงานล่าสุดอยู่ที่ `.handover/HANDOVER.md`
+(**repo private รวม [handover-notes](https://github.com/AeyXD/handover-notes)** — `.handover`
+เป็น symlink ไม่ถูก track ใน repo นี้)
 
 ```bash
 python3 -m unittest discover -s tests -v   # ชุดจัดจังหวะ/CLI/integration (ไม่ต้องมี whisper)

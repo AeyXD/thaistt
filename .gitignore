@@ -14,3 +14,6 @@ venv/
 *.mp3
 *.ogg
 *.m4a
+
+# HANDOVER อยู่ใน repo รวม (AeyXD/handover-notes) — .handover เป็น symlink ห้าม track
+.handover

@@ -3,8 +3,10 @@
 ถอดเสียง/วิดีโอเป็นซับฉบับร่าง (SRT) ด้วย whisper.cpp + ffmpeg แบบ subprocess —
 เพื่อส่งต่อเข้า pipeline แปลไทยของ TStudio (workspace "THub Studio")
 
-- ตอบ/เขียนเอกสารเป็นภาษาไทย · สถานะงานล่าสุดอยู่ที่ `.handover/HANDOVER.md`
-  (commit เข้า repo ตามแบบแผน ecosystem) · สเปกฉบับเต็ม:
+- ตอบ/เขียนเอกสารเป็นภาษาไทย · สถานะงานล่าสุดอยู่ที่ `.handover/HANDOVER.md` —
+  **HANDOVER อยู่ใน repo private รวม `AeyXD/handover-notes`** (`.handover` เป็น symlink →
+  `../handover-notes/thaistt` ไม่ถูก track ใน repo นี้ — ต้อง commit+push ที่ repo รวมทุกครั้ง) ·
+  แนวทางเขียน/เช็กลิสต์: `../handover-notes/GUIDE.md` · สเปกฉบับเต็ม:
   `../THub Studio/docs/spec-vox-whisper.md` → "Phase S0"
 - หลักการใหญ่: **อนุรักษ์ข้อมูลเดิมเสมอ** — ไม่เขียนทับไฟล์ต้นฉบับ · เขียนเฉพาะไฟล์ output
   ที่ระบุ · temp ทำความสะอาดเองแม้รันพังกลางทาง
@@ -28,7 +30,7 @@ python3 thaistt.py --help                       # CLI (ไฟล์เดีย�
 | `tests/` | unit (ชั้นจัดจังหวะใช้ SRT ดิบจำลองได้ ไม่ต้องมี whisper) + integration ด้วย `tests/fakes/` (CI ไม่ต้องมี whisper) + fixture สื่อจริง (skip เมื่อเครื่องไม่ครบ) |
 | `NOTICE` | เครดิตส่วนประกอบบุคคลที่สาม — ต้องรักษาไว้ทุกครั้งที่แก้ |
 | `CLAUDE.md` | บรรทัดเดียว `@AGENTS.md` ให้ Claude Code โหลดไฟล์นี้อัตโนมัติ — แก้กฎที่ AGENTS.md เท่านั้น |
-| `.handover/` | `HANDOVER.md` สถานะงาน · `GUIDE.md` แนวทางเขียน handover + เช็กลิสต์ก่อนจบ session |
+| `.handover/` | symlink → `../handover-notes/thaistt` (repo รวม private) — `HANDOVER.md` สถานะงาน + `HANDOVER-archive-*.md` · GUIDE กลางอยู่ `../handover-notes/GUIDE.md` |
 
 ## กฎเหล็ก
 
@@ -38,4 +40,6 @@ python3 thaistt.py --help                       # CLI (ไฟล์เดีย�
 3. **CLI contract ตามสเปก workspace** — อาร์กิวเมนต์/exit codes (0 สำเร็จ · 2 พัง) ห้ามเปลี่ยน
    โดยไม่ประสานกับ `spec-vox-whisper.md` (ผู้บริโภคคือ TVox ใน THub-Launcher)
 4. เทสใหม่ประกอบทุกฟีเจอร์/ทุก bugfix · CI (GitHub Actions) ต้องเขียวทุก push
-5. จบ session ทำงาน → อัปเดต `.handover/HANDOVER.md` พร้อม commit hash เสมอ (ตามแนวทาง/เช็กลิสต์ใน `.handover/GUIDE.md`)
+5. จบ session ทำงาน → อัปเดต `.handover/HANDOVER.md` พร้อม commit hash เสมอ (ตามแนวทาง/เช็กลิสต์ใน
+   `../handover-notes/GUIDE.md`) — **commit ใน repo รวม `handover-notes`** ไม่ใช่ repo นี้ (`.handover`
+   เป็น symlink ที่ .gitignore กันไว้ — อย่า track)
