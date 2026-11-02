@@ -4,16 +4,56 @@ __pycache__/
 .venv/
 venv/
 
-# ห้าม commit โมเดล/ไบนารี/สื่อ (กฎ AGENTS.md ข้อ 2)
+# Python/เครื่องมือพัฒนา
+.pytest_cache/
+.coverage
+htmlcov/
+*.egg-info/
+build/
+dist/
+.vscode/
+.idea/
+*.swp
+*~
+
+# ขยะจากระบบปฏิบัติการ
+.DS_Store
+._*
+Thumbs.db
+desktop.ini
+*.log
+*.tmp
+*.orig
+*.rej
+*.bak
+
+# ห้าม commit โมเดล/ไบนารี/สื่อ (กฎ AGENTS.md ข้อ 2) —
+# รายการสื่อครบตาม MEDIA_EXTS ที่ CLI รับจริง (+ .aiff ที่เครื่องมือทดสอบสร้าง)
 *.ggml
 *.bin
 *.onnx
 *.wav
+*.aiff
+*.aif
 *.mp4
 *.mkv
-*.mp3
+*.avi
+*.mov
+*.webm
+*.ts
+*.mpg
+*.mpeg
+*.flv
+*.wmv
 *.ogg
+*.oga
+*.mp3
+*.mp2
 *.m4a
+*.aac
+*.flac
+*.opus
+*.wma
 
 # HANDOVER อยู่ใน repo รวม (AeyXD/handover-notes) — .handover เป็น symlink ห้าม track
 .handover
