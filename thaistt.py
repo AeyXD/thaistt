@@ -43,10 +43,11 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import wave
 
 APP = "thaistt"
-VERSION = "0.6.1"
+VERSION = "0.6.2"
 
 ENV_WHISPER = "THAISTT_WHISPER"
 ENV_MODEL = "THAISTT_MODEL"
@@ -601,10 +602,30 @@ def _read_text(path):
         raise ThaisttError("อ่านไฟล์ผลลัพธ์ %s ไม่ได้: %s" % (path, exc))
 
 
-def _write_text(path, content):
+def _replace_atomically(path, write):
+    """เขียนไฟล์ temp ข้างปลายทางแล้ว os.replace — พังกลางการเขียนไม่ทิ้งไฟล์ขาดครึ่ง
+
+    สำคัญกับ resume: `.txt` ที่ขาดครึ่งจะถูกนับว่า "มีผลแล้ว" และ manifest ที่ขาดครึ่ง
+    ทำให้ประวัติรอบก่อนหาย
+    """
+    tmp_path = "%s.tmp-%d" % (path, os.getpid())
     try:
-        with open(path, "w", encoding="utf-8", newline="\n") as fh:
+        write(tmp_path)
+        os.replace(tmp_path, path)
+    finally:
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+
+
+def _write_text(path, content):
+    def write(tmp_path):
+        with open(tmp_path, "w", encoding="utf-8", newline="\n") as fh:
             fh.write(content)
+    try:
+        _replace_atomically(path, write)
     except OSError as exc:
         raise ThaisttError("เขียนไฟล์ %s ไม่ได้: %s" % (path, exc))
 
@@ -958,17 +979,32 @@ MANIFEST_COLUMNS = ["id", "file", "status", "duration_s", "avg_p", "low_conf_pct
 
 
 def _read_manifest_rows(path):
-    """อ่าน manifest เดิม → {id: row} ตามลำดับเดิม — ไม่มี/อ่านไม่ได้คืน {} ไม่พัง
+    """อ่าน manifest เดิม → {id: row} ตามลำดับเดิม — ไม่มีไฟล์คืน {}
 
-    รับ manifest รุ่นเก่าที่คอลัมน์น้อยกว่าได้ (คอลัมน์ที่ขาด = ว่าง)
+    รับ manifest รุ่นเก่าที่คอลัมน์น้อยกว่าได้ (คอลัมน์ที่ขาด = ว่าง) · อ่านไม่ได้
+    (เสีย/ไม่ใช่ manifest) → เก็บสำรอง `.bak-<เวลา>` + เตือน แล้วเริ่มใหม่ — ไม่ทิ้ง
+    ประวัติเงียบ ๆ (หลักอนุรักษ์ข้อมูลเดิม)
     """
+    if not os.path.exists(path):
+        return {}
     rows = {}
     try:
         with open(path, "r", encoding="utf-8-sig", newline="") as fh:
-            for row in csv.DictReader(fh):
+            reader = csv.DictReader(fh)
+            if "id" not in (reader.fieldnames or []):
+                raise ValueError("ไม่มีคอลัมน์ id")
+            for row in reader:
                 if row.get("id"):
                     rows[row["id"]] = [row.get(col) or "" for col in MANIFEST_COLUMNS]
-    except (OSError, UnicodeDecodeError, csv.Error):
+    except (OSError, UnicodeDecodeError, csv.Error, ValueError) as exc:
+        backup = "%s.bak-%s" % (path, time.strftime("%Y%m%d-%H%M%S"))
+        try:
+            shutil.copy2(path, backup)
+            kept = "สำรองไว้ที่ %s" % backup
+        except OSError as copy_exc:
+            kept = "สำรองไม่ได้: %s" % copy_exc
+        print("คำเตือน: อ่าน manifest เดิม %s ไม่ได้ (%s) — %s แล้วเริ่มใหม่"
+              % (path, exc, kept), file=sys.stderr, flush=True)
         return {}
     return rows
 
@@ -1007,11 +1043,13 @@ def _write_manifest(items, out_dir, requested_lang=""):
             len(it.text),
             it.note,
         ]
-    try:
-        with open(path, "w", encoding="utf-8-sig", newline="") as fh:
+    def write(tmp_path):
+        with open(tmp_path, "w", encoding="utf-8-sig", newline="") as fh:
             writer = csv.writer(fh)
             writer.writerow(MANIFEST_COLUMNS)
             writer.writerows(rows.values())
+    try:
+        _replace_atomically(path, write)
     except OSError as exc:
         raise ThaisttError("เขียนไฟล์สรุป %s ไม่ได้: %s" % (path, exc))
 
@@ -1215,19 +1253,28 @@ def run_batch(args, say):
                         for it in items_by_lang[lang]:
                             if it.wav in (detected or {}):
                                 it.lang, it.lang_p = detected[it.wav]
+            # เขียนผลท้ายทุกกลุ่ม (ไม่รอจบทั้งงาน) — รันยาวพังกลางทาง (Ctrl-C/ไฟดับ)
+            # เสียแค่กลุ่มที่กำลังทำ รันซ้ำ resume ต่อได้จริง · manifest อัปเดตด้วย
+            # จึงคงค่าความมั่นใจของกลุ่มที่เสร็จแล้ว
+            for lang in langs:
+                lang_items = items_by_lang[lang]
+                for pos in positions:
+                    it = lang_items[pos]
+                    if it.status in ("ok", "empty"):
+                        _write_text(it.out_path, it.text + "\n" if it.text else "")
+                _write_manifest([it for it in lang_items if it.status],
+                                lang_dir_of(lang), requested_lang=lang)
             state["processed"] += len(positions)
             say_pct(60 + 35 * state["processed"] // max(1, total),
                     "ถอดเสียงกลุ่ม %d/%d เสร็จ%s…"
                     % (seq, len(groups),
                        " (พร้อมตรวจภาษา)" if args.detect_lang else ""))
 
-    # เขียนผลลัพธ์นอก temp — ok/empty เขียนไฟล์เสมอ (ว่าง = ไฟล์เปล่า) ให้ resume สม่ำเสมอ
+    # ผล .txt เขียนไปแล้วท้ายแต่ละกลุ่ม (ok/empty เขียนเสมอ ว่าง = ไฟล์เปล่า) —
+    # ตรงนี้เขียน manifest ปิดท้ายครบทุกคลิป (รวมรอบที่ข้ามหมดจนไม่มีกลุ่มเลย)
     all_items = []
     for lang in langs:
         lang_items = items_by_lang[lang]
-        for it in lang_items:
-            if it.status in ("ok", "empty"):
-                _write_text(it.out_path, it.text + "\n" if it.text else "")
         _write_manifest(lang_items, lang_dir_of(lang), requested_lang=lang)
         all_items.extend(lang_items)
 

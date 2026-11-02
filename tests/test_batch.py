@@ -566,6 +566,52 @@ class TestBatchWithFakes(unittest.TestCase):
         rows = self.read_manifest()
         self.assertEqual([r["status"] for r in rows], ["ok", "ok"])
 
+    # ---------------- v0.6.2: เขียนผลท้ายทุกกลุ่ม + atomic ----------------
+
+    def test_interrupt_mid_run_keeps_finished_groups(self):
+        """รันยาวถูกยกเลิกที่กลุ่ม 2 → ผล + manifest ของกลุ่ม 1 ต้องอยู่ รันซ้ำ resume ต่อ"""
+        real_multi = thaistt._run_whisper_multi
+        calls = {"n": 0}
+
+        def interrupt_on_second(*a, **kw):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                raise KeyboardInterrupt
+            return real_multi(*a, **kw)
+
+        with mock.patch.object(thaistt, "_run_whisper_multi", interrupt_on_second):
+            code, err = self.run_batch(self.media, ["--batch-size", "1"])
+        self.assertEqual(code, 2, err)
+        self.assertIn("ถูกยกเลิกกลางทาง", err)
+        self.assertTrue(os.path.isfile(self.out("m1")), "ผลกลุ่ม 1 ต้องถูกเขียนแล้ว")
+        self.assertFalse(os.path.exists(self.out("m2")))
+        rows = {r["id"]: r for r in self.read_manifest()}
+        self.assertEqual(set(rows), {"m1"})
+        self.assertEqual(rows["m1"]["avg_p"], "0.75")
+        # รันซ้ำ: ข้าม m1 ถอดเฉพาะที่เหลือ · manifest ครบและ m1 คงค่าเดิม
+        code2, err2 = self.run_batch(self.media, ["--batch-size", "1"])
+        self.assertEqual(code2, 0, err2)
+        self.assertIn("ข้ามผลเดิม 1", err2)
+        rows = {r["id"]: r for r in self.read_manifest()}
+        self.assertEqual(set(rows), {"m1", "m2", "m3"})
+        self.assertTrue(all(r["avg_p"] == "0.75" for r in rows.values()))
+        # ไม่มีไฟล์ temp ของการเขียนแบบ atomic ค้างใน outdir
+        self.assertEqual([n for n in os.listdir(self.outdir) if ".tmp-" in n], [])
+
+    def test_unreadable_manifest_backed_up_not_silently_dropped(self):
+        os.makedirs(self.outdir)
+        path = os.path.join(self.outdir, thaistt.MANIFEST_NAME)
+        with open(path, "wb") as fh:
+            fh.write(b"\xff\xfe\x00garbage-not-a-manifest")
+        code, err = self.run_batch(self.media[:2])
+        self.assertEqual(code, 0, err)
+        self.assertIn("อ่าน manifest เดิม", err)
+        backups = [n for n in os.listdir(self.outdir) if ".bak-" in n]
+        self.assertEqual(len(backups), 1)
+        with open(os.path.join(self.outdir, backups[0]), "rb") as fh:
+            self.assertEqual(fh.read(), b"\xff\xfe\x00garbage-not-a-manifest")
+        self.assertEqual({r["id"] for r in self.read_manifest()}, {"m1", "m2"})
+
     def test_files_from_selects_clips(self):
         listfile = os.path.join(self.tmp, "pick.txt")
         with open(listfile, "w", encoding="utf-8") as fh:
