@@ -1,4 +1,4 @@
-# AGENT.md — คู่มือสำหรับ AI agent ที่ทำงานใน thaistt
+# AGENTS.md — คู่มือสำหรับ AI agent ที่ทำงานใน thaistt
 
 ถอดเสียง/วิดีโอเป็นซับฉบับร่าง (SRT) ด้วย whisper.cpp + ffmpeg แบบ subprocess —
 เพื่อส่งต่อเข้า pipeline แปลไทยของ TStudio (workspace "THub Studio")
@@ -27,6 +27,8 @@ python3 thaistt.py --help                       # CLI (ไฟล์เดีย�
 | `install.sh` | symlink คำสั่งสั้น `thaistt` เข้า PATH (whitelist ปลายทาง) |
 | `tests/` | unit (ชั้นจัดจังหวะใช้ SRT ดิบจำลองได้ ไม่ต้องมี whisper) + integration ด้วย `tests/fakes/` (CI ไม่ต้องมี whisper) + fixture สื่อจริง (skip เมื่อเครื่องไม่ครบ) |
 | `NOTICE` | เครดิตส่วนประกอบบุคคลที่สาม — ต้องรักษาไว้ทุกครั้งที่แก้ |
+| `CLAUDE.md` | บรรทัดเดียว `@AGENTS.md` ให้ Claude Code โหลดไฟล์นี้อัตโนมัติ — แก้กฎที่ AGENTS.md เท่านั้น |
+| `.handover/` | `HANDOVER.md` สถานะงาน · `GUIDE.md` แนวทางเขียน handover + เช็กลิสต์ก่อนจบ session |
 
 ## กฎเหล็ก
 
@@ -36,4 +38,4 @@ python3 thaistt.py --help                       # CLI (ไฟล์เดีย�
 3. **CLI contract ตามสเปก workspace** — อาร์กิวเมนต์/exit codes (0 สำเร็จ · 2 พัง) ห้ามเปลี่ยน
    โดยไม่ประสานกับ `spec-vox-whisper.md` (ผู้บริโภคคือ TVox ใน THub-Launcher)
 4. เทสใหม่ประกอบทุกฟีเจอร์/ทุก bugfix · CI (GitHub Actions) ต้องเขียวทุก push
-5. จบ session ทำงาน → อัปเดต `.handover/HANDOVER.md` พร้อม commit hash เสมอ
+5. จบ session ทำงาน → อัปเดต `.handover/HANDOVER.md` พร้อม commit hash เสมอ (ตามแนวทาง/เช็กลิสต์ใน `.handover/GUIDE.md`)

@@ -117,11 +117,11 @@ python3 thaistt.py <folder|ไฟล์หลายตัว> -l <lang> --format
 
 ## การพัฒนา
 
-อ่าน `AGENT.md` ก่อนแตะโค้ดทุกครั้ง · สถานะงานล่าสุดอยู่ที่ `.handover/HANDOVER.md`
+อ่าน `AGENTS.md` ก่อนแตะโค้ดทุกครั้ง · สถานะงานล่าสุดอยู่ที่ `.handover/HANDOVER.md`
 
 ```bash
 python3 -m unittest discover -s tests -v   # ชุดจัดจังหวะ/CLI/integration (ไม่ต้องมี whisper)
 THAISTT_TEST_MODEL=<path.ggml> python3 -m unittest tests.test_fixture_real -v  # fixture จริง (มีเครื่องมือครบเท่านั้น)
 ```
 
-ห้าม commit โมเดล/ไบนารี/สื่อ (กฎ AGENT.md ข้อ 2) · เครดิตส่วนประกอบบุคคลที่สามดู `NOTICE`
+ห้าม commit โมเดล/ไบนารี/สื่อ (กฎ AGENTS.md ข้อ 2) · เครดิตส่วนประกอบบุคคลที่สามดู `NOTICE`

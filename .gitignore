@@ -4,7 +4,7 @@ __pycache__/
 .venv/
 venv/
 
-# ห้าม commit โมเดล/ไบนารี/สื่อ (กฎ AGENT.md ข้อ 2)
+# ห้าม commit โมเดล/ไบนารี/สื่อ (กฎ AGENTS.md ข้อ 2)
 *.ggml
 *.bin
 *.onnx
