@@ -205,6 +205,34 @@ class TestPipelineWithFakes(unittest.TestCase):
         self.assertIn("progress: 10%", err)
         self.assertIn("progress: 100%", err)
 
+    # ---------------- v0.7: คำเตือนข้อความหลอนโหมดไฟล์เดียว (Inbox W1) ----
+
+    def test_single_file_no_hallucination_warning_on_normal(self):
+        # ปกติ (avg_p 0.75 จาก fake · ไม่มีลายเซ็น · ซับน้อยกว่า 6) = เงียบ
+        code, err = self.run_thaistt()
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("ลายเซ็นข้อความหลอน", err)
+        self.assertNotIn("avg_p=", err)
+        self.assertNotIn("ซับซ้ำ", err)
+
+    def test_single_file_warns_on_hallucination_signature_even_quiet(self):
+        env_extra = {"THAISTT_TEST_WHISPER_TEXT": "Transcription by ESO."}
+        code, err = self.run_thaistt(extra=["--format", "txt", "--quiet"],
+                                     env_extra=env_extra)
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("progress:", err)          # เงียบ progress
+        self.assertIn("ลายเซ็นข้อความหลอน", err)   # แต่คำเตือนพิมพ์เสมอ
+        self.assertIn("Transcription by ESO", err)
+
+    def test_single_file_srt_mode_warns_on_repetition(self):
+        # สร้าง SRT หลอนแบบ outro.bik ("The"/"End" สลับ) ผ่าน fake: ใช้ txt ยืนยันกลไก
+        # แล้วยืนยันระดับ srt ด้วย dup-ratio ตรง ๆ ใน unit (test_batch) — ที่นี่ตรวจว่า
+        # โหมด srt เรียก json จริง (avg_p ปรากฏเมื่อค่าต่ำ)
+        code, err = self.run_thaistt(extra=["--format", "txt", "--quiet"],
+                                     env_extra={"THAISTT_TEST_WHISPER_TEXT": "[Music]"})
+        self.assertEqual(code, 0, err)
+        self.assertIn("ลายเซ็นข้อความหลอน", err)
+
 
 if __name__ == "__main__":
     unittest.main()

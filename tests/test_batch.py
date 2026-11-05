@@ -106,6 +106,38 @@ class TestBatchHelpers(unittest.TestCase):
         self.assertTrue(thaistt._is_media_name("voice.mp2"))
         self.assertFalse(thaistt._is_media_name("voice.w2speech"))
 
+    def test_bik_is_media(self):
+        # Inbox 3 พ.ย.: .bik ต้องผ่านทั้งไฟล์เดียวและการขยายโฟลเดอร์
+        self.assertTrue(thaistt._is_media_name("intro.bik"))
+
+    def test_bik_in_folder_expansion(self):
+        folder = os.path.join(self.tmp, "movies")
+        os.makedirs(folder)
+        with open(os.path.join(folder, "intro.bik"), "wb") as fh:
+            fh.write(b"x")
+        result = thaistt._expand_batch_inputs([folder])
+        self.assertEqual(result, [os.path.join(folder, "intro.bik")])
+
+    def test_hallucination_signature_regex(self):
+        # ลายเซ็นจริงจาก W1 (Inbox 3 พ.ย.)
+        for text in ("Transcription by ESO.", "The End Transcription by CastingWords",
+                     "*Painful music*", "[Music]", "Subtitles by Jane",
+                     "I'll see you next time. Translation by —"):
+            self.assertRegex(text, thaistt.HALLUCINATION_SIGN_RE, text)
+        for text in ("And so, my fellow Americans.", "Let's go.", "The End"):
+            self.assertNotRegex(text, thaistt.HALLUCINATION_SIGN_RE, text)
+
+    def test_hallucination_warnings_scenarios(self):
+        warn = thaistt._hallucination_warnings
+        normal = ["Hello there.", "How are you?", "Fine, thanks.", "See you.",
+                  "One two three.", "Four five six."]
+        self.assertEqual(warn(normal, 0.9), [])       # ปกติ: ไม่เตือน
+        self.assertEqual(warn(["Hi."], None), [])      # ไม่มี json: ไม่เตือนส่วน avg_p
+        self.assertTrue(any("avg_p" in w for w in warn(normal, 0.4)))
+        self.assertTrue(any("ลายเซ็น" in w for w in warn(["*Painful music*"], 0.9)))
+        repetitive = ["The", "End"] * 6                # หลักฐาน outro.bik
+        self.assertTrue(any("ซับซ้ำ" in w for w in warn(repetitive, 0.9)))
+
     def test_files_from_parser(self):
         listfile = os.path.join(self.tmp, "list.txt")
         one = self._touch("one.ogg")

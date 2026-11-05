@@ -101,7 +101,14 @@ This part comes after a long pause.
 SRT
 fi
 if [ "$want_json" = "1" ]; then
-  echo "$inputs" | while IFS= read -r f; do
-    [ -n "$f" ] && emit_json "$f.json"
-  done
+  # โหมดไฟล์เดียว: json ไปที่ <target ไม่รวมส่วนขยาย>.json (ตรง _json_path_for
+  # ของ thaistt — target ของสไตล์ bool คือ prefix อยู่แล้ว) · โหมด batch: ข้าง input
+  if [ -n "$target" ]; then
+    j="${target%.*}.json"
+    emit_json "$j"
+  else
+    echo "$inputs" | while IFS= read -r f; do
+      [ -n "$f" ] && emit_json "$f.json"
+    done
+  fi
 fi

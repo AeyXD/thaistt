@@ -47,7 +47,7 @@ import time
 import wave
 
 APP = "thaistt"
-VERSION = "0.6.2"
+VERSION = "0.7.0"
 
 ENV_WHISPER = "THAISTT_WHISPER"
 ENV_MODEL = "THAISTT_MODEL"
@@ -63,9 +63,9 @@ DEFAULT_BATCH_SIZE = 250
 DEFAULT_PARALLEL_FFMPEG = 8
 
 # นามสกุลที่รับเมื่อขยายโฟลเดอร์ (W1 voices มี .say ปน — ต้องกรอง ·
-# .mp2 ตามขอใช้จริงของ W2: เสียง w2speech เป็น mp2)
+# .mp2 ตามขอใช้จริงของ W2 · .bik = Bink video ที่ ffmpeg ถอดเสียงได้ในตัว — Inbox 3 พ.ย.)
 MEDIA_EXTS = frozenset(
-    ".mp4 .mkv .avi .mov .webm .ts .mpg .mpeg .flv .wmv "
+    ".mp4 .mkv .avi .mov .webm .ts .mpg .mpeg .flv .wmv .bik "
     ".wav .ogg .oga .mp3 .mp2 .m4a .aac .flac .opus .wma".split()
 )
 
@@ -88,6 +88,18 @@ GHOST_PHRASES = frozenset(
               "[applause]", "[laughter]", "♪", "…")
     if p.strip()
 )
+
+# ลายเซ็นข้อความหลอนระดับ "ไฟล์" ของ Whisper บนวิดีโอดนตรี/เสียงประกอบล้วน
+# (หลักฐานจริงจาก W1 3 พ.ย.: "Transcription by ESO/CastingWords" · "*Painful music*"
+# ซ้ำหลายสิบซับ · "The"/"End" สลับกันทั้งเรื่อง) — ใช้เตือนโหมดไฟล์เดียว (Inbox)
+HALLUCINATION_SIGN_RE = re.compile(
+    r"(transcription|translation|captions?|subtitles?)\s+by"
+    r"|\[\s*music\s*\]"
+    r"|\*[^*\n]{0,40}(music|applause)[^*\n]{0,40}\*",
+    re.IGNORECASE,
+)
+# สัดส่วนซับที่เป็นข้อความเดิมซ้ำ ๆ เกินนี้ (ในไฟล์ ≥ 6 ซับ) = น่าสงสัยว่าหลอน
+DUPLICATE_RATIO_THRESHOLD = 0.5
 
 
 class ThaisttError(Exception):
@@ -421,13 +433,24 @@ def _probe_whisper(whisper_bin):
     return fname_style, has_prompt, has_json, has_detect
 
 
+def _json_path_for(out_path, fmt):
+    """ตำแหน่งไฟล์ -ojf ที่ whisper เขียน: <prefix ไม่รวมส่วนขยาย>.json (ทั้งสองสไตล์)"""
+    suffix = ".srt" if fmt == "srt" else ".txt"
+    return out_path[: -len(suffix)] + ".json"
+
+
 def _whisper_argv(whisper_bin, model, wav, lang, out_path, fmt, threads, prompt,
                   fname_style, has_prompt, with_pp, json_out=False):
     cmd = [whisper_bin, "-m", model, "-f", wav, "-l", lang]
     if with_pp:
         cmd += ["-pp"]
     if json_out:
-        cmd += ["-ojf"]  # json เต็มพร้อม p ต่อ token → ความมั่นใจต่อคลิปใน manifest
+        # json เต็มพร้อม p ต่อ token → ความมั่นใจ + คำเตือนข้อความหลอน
+        # สไตล์ FNAME ต้องส่งชื่อไฟล์ตรง ๆ (ธงเปล่า ๆ จะกลืนอาร์กิวเมนต์ถัดไป)
+        if fname_style:
+            cmd += ["-ojf", _json_path_for(out_path, fmt)]
+        else:
+            cmd += ["-ojf"]
     if fname_style:
         # รุ่นที่รับชื่อไฟล์ตรง ๆ
         cmd += (["-osrt", out_path] if fmt == "srt" else ["-otxt", out_path])
@@ -731,7 +754,7 @@ def run_pipeline(args, say):
             raw_path = os.path.join(tmpdir, "raw.srt")
             _run_whisper(
                 whisper_bin, model, wav_path, args.lang, raw_path, "srt",
-                args.threads, prompt, on_whisper_pct, say,
+                args.threads, prompt, on_whisper_pct, say, json_out=True,
             )
             say("progress: 95% กำลังจัดจังหวะซับ (merge/split)…")
             segments = parse_srt(_read_text(raw_path))
@@ -739,6 +762,7 @@ def run_pipeline(args, say):
                 segments = shift_segments(segments, range_pair[0])
             result = retime_segments(segments, args.max_chars, args.max_dur, args.min_gap)
             _write_text(out_path, format_srt(result))
+            _print_hallucination_warnings([s.text for s in result], raw_path, "srt")
             if not result:
                 say("คำเตือน: ไม่พบเสียงพูดในช่วงที่ถอด — เขียน SRT เปล่า")
             say("progress: 100%% เสร็จ — %d ซับ → %s" % (len(result), out_path))
@@ -746,10 +770,11 @@ def run_pipeline(args, say):
             raw_path = os.path.join(tmpdir, "raw.txt")
             _run_whisper(
                 whisper_bin, model, wav_path, args.lang, raw_path, "txt",
-                args.threads, prompt, on_whisper_pct, say,
+                args.threads, prompt, on_whisper_pct, say, json_out=True,
             )
             content = _read_text(raw_path).strip()
             _write_text(out_path, content + "\n" if content else "")
+            _print_hallucination_warnings([content], raw_path, "txt")
             if not content:
                 say("คำเตือน: ไม่พบเสียงพูดในช่วงที่ถอด — เขียนไฟล์เปล่า")
             say("progress: 100%% เสร็จ — เขียนข้อความ → %s" % out_path)
@@ -774,7 +799,7 @@ def build_parser():
     )
     parser.add_argument(
         "media", nargs="*", metavar="media|folder",
-        help="ไฟล์สื่อที่ ffmpeg รองรับ (mp4/mkv/wav/ogg/mp3/mp2/m4a/webm ฯลฯ) — "
+        help="ไฟล์สื่อที่ ffmpeg รองรับ (mp4/mkv/wav/ogg/mp3/mp2/bik/m4a/webm ฯลฯ) — "
              "หลายตัวหรือโฟลเดอร์ = โหมด batch (txt รายคลิป) · ไม่ใส่ก็ได้ถ้าใช้ --files-from")
     parser.add_argument(
         "-l", "--lang", dest="lang", default="auto", metavar="lang",
@@ -1281,6 +1306,42 @@ def run_batch(args, say):
     say("progress: 100%% เสร็จ — ผลอยู่ที่ %s (สรุปรายคลิป: %s)" % (out_dir, MANIFEST_NAME))
     fail_count = _batch_summary(all_items, requested_lang=langs[0])
     return 2 if fail_count else 0
+
+
+def _hallucination_warnings(sub_texts, avg_p):
+    """คำเตือนว่า "ไฟล์นี้น่าจะไม่มีบทพูดจริง" สำหรับโหมดไฟล์เดียว (Inbox W1 3 พ.ย.)
+
+    sub_texts: ข้อความรายซับของไฟล์ (โหมด txt ใส่ทั้งข้อความเป็นสมาชิกเดียว) ·
+    avg_p: ความมั่นใจเฉลี่ยต่อ token จาก -ojf (None เมื่อ build ไม่รองรับ)
+    คืน list ข้อความเตือน (ว่าง = ดูปกติ) — **ไม่แตะข้อมูลใน output แต่อย่างใด**
+    (ผู้ใช้เลือกแนวทางเตือนอย่างเดียว 5 พ.ย.)
+    """
+    warnings = []
+    if avg_p is not None and avg_p < SUSPICIOUS_AVG_P:
+        warnings.append(
+            "ความมั่นใจเฉลี่ยต่ำ (avg_p=%.2f < %.2f) — ไฟล์นี้อาจไม่มีเสียงพูดจริง "
+            "หรือถอดได้ไม่น่าเชื่อถือ แนะนำตรวจก่อนนำไปใช้" % (avg_p, SUSPICIOUS_AVG_P))
+    hits = [t.strip() for t in sub_texts if t.strip() and HALLUCINATION_SIGN_RE.search(t)]
+    if hits:
+        sample = " / ".join('"%s"' % h[:40] for h in hits[:3])
+        warnings.append(
+            "พบลายเซ็นข้อความหลอนของ Whisper (%s) — มักเกิดบนช่วงดนตรี/เสียงประกอบล้วน" % sample)
+    texts = [" ".join(t.lower().split()) for t in sub_texts if t.strip()]
+    if len(texts) >= 6:
+        unique = len(set(texts))
+        if 1 - unique / len(texts) >= DUPLICATE_RATIO_THRESHOLD:
+            warnings.append(
+                "ซับซ้ำกันมากผิดปกติ (%d จาก %d ซับเป็นข้อความเดิม) — ลักษณะข้อความหลอน"
+                "บนเสียงไม่มีบทพูด" % (len(texts) - unique, len(texts)))
+    return warnings
+
+
+def _print_hallucination_warnings(sub_texts, raw_path, fmt):
+    """คำนวณ + พิมพ์คำเตือนที่ stderr เสมอ (แม้ --quiet — สัญญาณระดับผลลัพธ์ ไม่ใช่ progress)"""
+    conf = _confidence_from_json(_json_path_for(raw_path, fmt))
+    avg_p = conf[0] if conf else None
+    for message in _hallucination_warnings(sub_texts, avg_p):
+        print("%s: คำเตือน: %s" % (APP, message), file=sys.stderr, flush=True)
 
 
 def _force_utf8_streams():
